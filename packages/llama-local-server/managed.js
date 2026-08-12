@@ -1,35 +1,69 @@
 'use strict';
 
-// The lifecycle owner for the SHARED chat instance (the 'chat-shared' claim,
-// port 8090). `server.js` answers "start one if it isn't up"; this module
-// answers the two questions that one cannot:
+// Lifecycle ownership for llama-server instances, machine-wide.
 //
-//   1. Is the instance on that port one *we* started, and may therefore stop?
-//   2. Who else still needs it?
+// `server.js` answers "start one if it isn't up". This module answers the
+// three questions it cannot:
 //
-// Why a separate module, and why does its state live outside the repo:
+//   1. Is the process on that port one *we* started, and may therefore stop?
+//   2. Is anyone still using it?
+//   3. Who is responsible for stopping it, given that whoever started it has
+//      very likely already exited?
+//
+// ---------------------------------------------------------------------------
+// Why ownership is a file and not a variable
+// ---------------------------------------------------------------------------
 //
 // `ensureRunning()`'s `owned` flag is a *per-process* contract -- true only
 // for the call that spawned the child. That is right for "don't kill a server
-// you merely reused", and useless for the thing actually wanted here: the
-// shared server should live exactly as long as some Claude Code session
-// needs it, no matter which process happened to start it. A watcher that
-// reused a server started ten minutes earlier by a one-shot skill invocation
-// has `owned === false` and so leaves a ~2.5 GB model resident forever. That
-// is the resource leak this module closes.
+// you merely reused", and useless for what is actually needed here, because
+// nearly every process that starts one of these servers is short-lived: a
+// status line render lasting ~100ms, a one-shot skill invocation, a CLI
+// search. The server has to outlive them all, so its lifetime cannot be owned
+// by any of them.
 //
-// So ownership is recorded on disk instead of held in a variable, and the
-// record lives at a MACHINE-level path rather than the usual `state/` dir
-// next to the code (the one deliberate exception to that convention in the
-// suite). It has to: `projects/local-inference-skill` is *installed by
-// copying* into `~/.claude/skills/`, so its copy cannot resolve a
-// repo-relative path, and it is one of the processes that starts this very
-// server. A record only the repo can find would mean the skill's spawns stay
-// unmanaged, which is exactly the case that leaks. Override with
+// Recording ownership on disk decouples the two. A record survives the
+// process that wrote it, survives an abrupt kill of that process (which on
+// Windows is the only kind of external kill there is -- see the note in the
+// suite CLAUDE.md), and can be read by a completely unrelated process that
+// takes over responsibility for reaping.
+//
+// The runtime directory is MACHINE-level rather than the usual `state/` dir
+// beside the code -- the one deliberate exception to that convention. It has
+// to be: the processes that start these servers include an installed skill
+// copied into ~/.claude/skills/ and, since the split, separate repositories.
+// None of them can resolve a path relative to this checkout. Override with
 // LLAMA_RUNTIME_DIR.
 //
-// The conservative half of the contract is kept: NO record means NO kill.
-// A llama-server someone started by hand on 8090 is reused and left alone.
+// ---------------------------------------------------------------------------
+// Two reap policies, because there are two kinds of instance
+// ---------------------------------------------------------------------------
+//
+//   'supervised'  lifetime is tied to a supervisor that is itself tied to
+//                 something real -- the watcher, which exits when no Claude
+//                 Code session is live. The shared chat instance on :8090.
+//                 Never idle-reaped: it is deliberately kept warm for as long
+//                 as anyone might type.
+//
+//   'idle'        reaped after `idle_ttl_ms` with no recorded use. This is for
+//                 dedicated instances (a 7B summarizer, an embedding server)
+//                 that a one-shot CLI stands up, uses for a minute, and walks
+//                 away from. Nothing was ever going to come back and stop
+//                 those, which is exactly how a 6.4 GB model ends up resident
+//                 until reboot.
+//
+// Clients mark use with touch(). Any process may call reap(); the watcher does
+// it on every tick, which makes it the de-facto reaper on a machine running
+// this suite, including for instances started by other repositories.
+//
+// ---------------------------------------------------------------------------
+// The conservative half of the contract, unchanged
+// ---------------------------------------------------------------------------
+//
+// NO record means NO kill. A llama-server started by hand is reused and left
+// alone, forever, by everything here. And before any kill, the recorded pid is
+// checked against the process actually holding the port, so a recycled pid
+// cannot make this shoot a bystander.
 
 const fs = require('fs');
 const path = require('path');
@@ -38,19 +72,37 @@ const cfg = require('./config');
 const ports = require('./ports');
 const server = require('./server');
 
-const CLAIM = 'chat-shared';
+const SHARED_CLAIM = 'chat-shared';
 
 const RUNTIME_DIR = cfg.LLAMA_RUNTIME_DIR;
-const RECORD_FILE = path.join(RUNTIME_DIR, 'chat-shared.json');
-// Held only across the spawn itself, not for the server's lifetime.
-const SPAWN_LOCK = path.join(RUNTIME_DIR, 'chat-shared.spawn.lock');
 
 // A spawn holds the lock while llama.cpp loads the model off disk. Measured
-// cold on a 3B Q4: ~4s. The ceiling is generous because the cost of being
-// wrong is asymmetric -- too short means two processes spawn and one wastes a
-// bind failure, too long means a crashed spawner blocks startup for this many
-// ms exactly once.
-const SPAWN_LOCK_STALE_MS = 60_000;
+// cold: ~4s for a 3B Q4, well over a minute for a 7B on a cold file cache.
+// The ceiling is generous because the cost of being wrong is asymmetric --
+// too short means two processes spawn and one wastes a bind failure, too long
+// means a crashed spawner blocks startup for this many ms exactly once.
+const SPAWN_LOCK_STALE_MS = 180_000;
+
+// Default idle TTL for 'idle' instances. Long enough to survive the gap
+// between two searches in one sitting, short enough that a forgotten 6.4 GB
+// model comes back while you are still at the desk.
+const DEFAULT_IDLE_TTL_MS = 15 * 60 * 1000;
+
+// touch() is called on every request by some clients, and a file write per
+// embedding call would be silly. Skip the write when the record is already
+// fresher than this.
+const TOUCH_THROTTLE_MS = 30_000;
+
+function recordFile(name) {
+  // Claim names come from ports.js, which is source, not user input -- but a
+  // name reaching the filesystem still gets constrained rather than trusted.
+  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(name)) throw new Error(`unsafe claim name: ${name}`);
+  return path.join(RUNTIME_DIR, `${name}.json`);
+}
+
+function spawnLockFile(name) {
+  return path.join(RUNTIME_DIR, `${name}.spawn.lock`);
+}
 
 function ensureRuntimeDir() {
   fs.mkdirSync(RUNTIME_DIR, { recursive: true });
@@ -67,31 +119,64 @@ function isPidAlive(pid) {
 }
 
 // ---------------------------------------------------------------------------
-// The record
+// Records
 // ---------------------------------------------------------------------------
 
-function readRecord() {
+function readRecord(name = SHARED_CLAIM) {
   try {
-    const rec = JSON.parse(fs.readFileSync(RECORD_FILE, 'utf8'));
+    const rec = JSON.parse(fs.readFileSync(recordFile(name), 'utf8'));
     if (!rec || typeof rec.pid !== 'number') return null;
-    return rec;
+    return { claim: name, ...rec };
   } catch {
     return null;
   }
 }
 
-function writeRecord(rec) {
+function writeRecord(name, rec) {
   ensureRuntimeDir();
-  const tmp = `${RECORD_FILE}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(rec, null, 2));
-  fs.renameSync(tmp, RECORD_FILE);
+  const file = recordFile(name);
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ claim: name, ...rec }, null, 2));
+  fs.renameSync(tmp, file);
 }
 
-function clearRecord() {
+function clearRecord(name = SHARED_CLAIM) {
   try {
-    fs.unlinkSync(RECORD_FILE);
+    fs.unlinkSync(recordFile(name));
   } catch {
     /* already gone */
+  }
+}
+
+// Every record currently on disk, including ones written by other repos.
+function listRecords() {
+  let files;
+  try {
+    files = fs.readdirSync(RUNTIME_DIR);
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const f of files) {
+    if (!f.endsWith('.json') || f.endsWith('.tmp')) continue;
+    const rec = readRecord(f.slice(0, -'.json'.length));
+    if (rec) out.push(rec);
+  }
+  return out;
+}
+
+// Marks an instance as still wanted. Throttled: the common caller is a
+// per-request client, and the reaper only needs minute-resolution.
+function touch(name = SHARED_CLAIM) {
+  const rec = readRecord(name);
+  if (!rec) return false;
+  const last = Date.parse(rec.last_used_at || rec.started_at || 0) || 0;
+  if (Date.now() - last < TOUCH_THROTTLE_MS) return true;
+  try {
+    writeRecord(name, { ...rec, last_used_at: new Date().toISOString() });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -99,30 +184,31 @@ function clearRecord() {
 // Spawn lock
 // ---------------------------------------------------------------------------
 //
-// `ensureRunning()` checks isUp() and then spawns, and those two steps are not
-// atomic. Two Claude Code sessions starting within the same second both see
-// "nothing on 8090" and both spawn; the loser fails to bind, exits instantly,
-// and its caller sits out the full 30s health poll before reporting a
-// misleading "did not become healthy". The lock collapses that race to one
-// spawner and one waiter.
+// `isUp()`-then-spawn is not atomic. Two Claude Code sessions opened in the
+// same second both see nothing on the port and both spawn; the loser fails to
+// bind, exits instantly, and its caller sits out the full health-poll timeout
+// before reporting a misleading "did not become healthy". The lock collapses
+// that race to one spawner and one waiter.
 
-function acquireSpawnLock() {
+function acquireSpawnLock(name) {
   ensureRuntimeDir();
+  const file = spawnLockFile(name);
   try {
-    const raw = JSON.parse(fs.readFileSync(SPAWN_LOCK, 'utf8'));
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
     const fresh = raw.at_ms && Date.now() - raw.at_ms < SPAWN_LOCK_STALE_MS;
     if (fresh && isPidAlive(raw.pid) && raw.pid !== process.pid) return false;
   } catch {
     /* no lock, or unparseable -- take it */
   }
-  fs.writeFileSync(SPAWN_LOCK, JSON.stringify({ pid: process.pid, at_ms: Date.now() }));
+  fs.writeFileSync(file, JSON.stringify({ pid: process.pid, at_ms: Date.now() }));
   return true;
 }
 
-function releaseSpawnLock() {
+function releaseSpawnLock(name) {
   try {
-    const raw = JSON.parse(fs.readFileSync(SPAWN_LOCK, 'utf8'));
-    if (raw.pid === process.pid) fs.unlinkSync(SPAWN_LOCK);
+    const file = spawnLockFile(name);
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (raw.pid === process.pid) fs.unlinkSync(file);
   } catch {
     /* already released, or taken over after going stale */
   }
@@ -168,31 +254,41 @@ function pidOnPort(port, { timeoutMs = 4000 } = {}) {
 // Start
 // ---------------------------------------------------------------------------
 
-// Returns { baseUrl, port, pid, started, managed }.
+// Starts the instance for a port claim if it is not already up, and records
+// this suite's ownership of it.
 //
+// Returns { claim, baseUrl, port, pid, started, managed }.
 //   started  true only when THIS call spawned the process
-//   managed  true when a record exists, i.e. stopShared() is permitted to
-//            stop it later. False means an instance we found but did not
-//            start and must leave alone.
-async function ensureShared({ startedBy = 'unknown', waitMs = 30_000, ...opts } = {}) {
-  const claim = ports.get(CLAIM);
+//   managed  true when a record exists, i.e. a reaper is permitted to stop it
+//            later. False means an instance found but not started here, which
+//            must be left alone.
+async function ensureManaged(name, { startedBy = 'unknown', waitMs = 30_000, policy, idleTtlMs, ...opts } = {}) {
+  const claim = ports.get(name);
   const port = claim.port;
-  const host = claim.host;
+  const host = opts.host || claim.host;
   const baseUrl = server.baseUrlFor(port, host);
 
+  const reapPolicy = policy || (name === SHARED_CLAIM ? 'supervised' : 'idle');
+  const ttl = idleTtlMs != null ? idleTtlMs : DEFAULT_IDLE_TTL_MS;
+
   if (await server.isUp(port, host)) {
-    return { baseUrl, port, pid: readRecord()?.pid ?? null, started: false, managed: !!readRecord() };
+    const rec = readRecord(name);
+    // Someone else's server, or ours from a previous run. Either way it is up
+    // and reusable; touch it so a reaper does not decide it is idle purely
+    // because this caller reused rather than started it.
+    if (rec) touch(name);
+    return { claim: name, baseUrl, port, pid: rec?.pid ?? null, started: false, managed: !!rec };
   }
 
   // Someone else is mid-spawn: wait for their server rather than racing it
   // into a bind failure.
-  if (!acquireSpawnLock()) {
+  if (!acquireSpawnLock(name)) {
     const deadline = Date.now() + waitMs;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 400));
       if (await server.isUp(port, host)) {
-        const rec = readRecord();
-        return { baseUrl, port, pid: rec?.pid ?? null, started: false, managed: !!rec };
+        const rec = readRecord(name);
+        return { claim: name, baseUrl, port, pid: rec?.pid ?? null, started: false, managed: !!rec };
       }
     }
     // The other spawner failed or died holding a lock that has not gone stale
@@ -205,10 +301,10 @@ async function ensureShared({ startedBy = 'unknown', waitMs = 30_000, ...opts } 
       ...opts,
       host,
       port,
-      alias: claim.alias,
+      alias: opts.alias || claim.alias || name,
       // Must outlive whichever short-lived process happened to start it: a
-      // statusline render or a one-shot skill call exits in milliseconds and
-      // the whole point is that the next caller reuses this instance.
+      // statusline render or a one-shot CLI exits in milliseconds and the
+      // whole point is that the next caller reuses this instance.
       // `detached: true` is the documented exception to preferring unref()
       // alone -- and it is verified rather than assumed, because a detached
       // child can silently fail to launch on Windows: ensureRunning() only
@@ -217,19 +313,30 @@ async function ensureShared({ startedBy = 'unknown', waitMs = 30_000, ...opts } 
       timeoutMs: waitMs,
     });
 
+    const now = new Date().toISOString();
     const pid = proc?.pid ?? (await pidOnPort(port));
-    writeRecord({
+    writeRecord(name, {
       pid,
       port,
       host,
-      model_path: opts.modelPath || cfg.LLAMA_MODEL_PATH,
-      started_at: new Date().toISOString(),
+      model_path: opts.modelPath || (name === SHARED_CLAIM ? cfg.LLAMA_MODEL_PATH : null),
+      started_at: now,
       started_by: startedBy,
+      last_used_at: now,
+      reap_policy: reapPolicy,
+      idle_ttl_ms: reapPolicy === 'idle' ? ttl : 0,
     });
-    return { baseUrl, port, pid, started: true, managed: true };
+    return { claim: name, baseUrl, port, pid, started: true, managed: true };
   } finally {
-    releaseSpawnLock();
+    releaseSpawnLock(name);
   }
+}
+
+// The shared chat instance. Kept as a named wrapper because it is what almost
+// every caller wants and because `ensureShared()` reads better at call sites
+// than a magic string.
+function ensureShared(opts = {}) {
+  return ensureManaged(SHARED_CLAIM, { policy: 'supervised', ...opts });
 }
 
 // ---------------------------------------------------------------------------
@@ -249,22 +356,28 @@ function forceKill(pid) {
   return new Promise((resolve) => {
     // /PID, never /IM: there are routinely several llama-server.exe processes
     // on this machine and the others may belong to another session or another
-    // repo built on this package. No /T -- llama-server has no children to reap
-    // and a tree kill is how you take out a bystander.
+    // repo. No /T -- llama-server has no children to reap and a tree kill is
+    // how you take out a bystander.
     execFile('taskkill', ['/PID', String(pid), '/F'], { timeout: 5000, windowsHide: true }, () => resolve());
   });
 }
 
-// Stops the shared instance IF this suite started it.
+// Stops an instance IF this suite recorded starting it.
 //
-// Returns { stopped, reason, pid }. Never throws: it is called from shutdown
-// paths where the process is leaving anyway and an exception would only
-// replace a clean exit with a stack trace.
-async function stopShared({ reason = 'requested' } = {}) {
-  const rec = readRecord();
+// Returns { stopped, reason, pid, claim }. Never throws: it is called from
+// shutdown paths where the process is leaving anyway and an exception would
+// only replace a clean exit with a stack trace.
+async function stopManaged(name, { reason = 'requested' } = {}) {
+  const rec = readRecord(name);
   if (!rec) {
-    const up = await server.isUp(ports.get(CLAIM).port);
+    let up = false;
+    try {
+      up = await server.isUp(ports.get(name).port);
+    } catch {
+      /* unknown claim -- treat as nothing to do */
+    }
     return {
+      claim: name,
       stopped: false,
       pid: null,
       reason: up
@@ -276,8 +389,8 @@ async function stopShared({ reason = 'requested' } = {}) {
   const { pid, port } = rec;
 
   if (!isPidAlive(pid)) {
-    clearRecord();
-    return { stopped: false, pid, reason: 'recorded instance is already gone' };
+    clearRecord(name);
+    return { claim: name, stopped: false, pid, reason: 'recorded instance is already gone' };
   }
 
   // PID reuse is the one way an automatic shutdown could kill something
@@ -288,16 +401,17 @@ async function stopShared({ reason = 'requested' } = {}) {
   // killing blind.
   const holder = await pidOnPort(port);
   if (holder !== null && holder !== pid) {
-    clearRecord();
+    clearRecord(name);
     return {
+      claim: name,
       stopped: false,
       pid,
       reason: `port ${port} is held by pid ${holder}, not the recorded ${pid} (recycled pid) -- left alone`,
     };
   }
   if (holder === null && !(await server.isUp(port))) {
-    clearRecord();
-    return { stopped: false, pid, reason: 'nothing answering on the port' };
+    clearRecord(name);
+    return { claim: name, stopped: false, pid, reason: 'nothing answering on the port' };
   }
 
   try {
@@ -310,31 +424,191 @@ async function stopShared({ reason = 'requested' } = {}) {
     await waitForExit(pid, 3000);
   }
 
-  clearRecord();
-  return { stopped: true, pid, reason };
+  clearRecord(name);
+  return { claim: name, stopped: true, pid, reason };
 }
 
-// True when a record exists and its process is still alive. Cheap; no network.
+function stopShared(opts = {}) {
+  return stopManaged(SHARED_CLAIM, opts);
+}
+
+// Stops every managed instance. The watcher's shutdown path: when the last
+// Claude Code session goes away, nothing this suite started should survive it.
+async function stopAll({ reason = 'shutdown', include = () => true } = {}) {
+  const results = [];
+  for (const rec of listRecords()) {
+    if (!include(rec)) continue;
+    results.push(await stopManaged(rec.claim, { reason }));
+  }
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Reap
+// ---------------------------------------------------------------------------
+
+// Stops 'idle' instances that have gone unused past their TTL, and clears
+// records whose process is gone. Safe to call often and from anywhere; the
+// watcher calls it every tick.
+//
+// 'supervised' instances are deliberately never idle-reaped -- the shared chat
+// server exists to be warm, and reaping it after a quiet ten minutes would
+// mean paying a model load the next time the user types.
+// The decision, split out from the doing so it can be tested without a real
+// server to kill. Returns { reap, idleFor, why }.
+function isReapable(rec, now = Date.now()) {
+  if (rec.reap_policy !== 'idle' || !rec.idle_ttl_ms) {
+    return { reap: false, idleFor: null, why: 'supervised -- lifetime tied to the watcher, never idle-reaped' };
+  }
+  // started_at as the fallback matters: an instance spawned and then never
+  // touched must still age out. Falling back to `now` would make a client that
+  // forgets to touch() immortal instead of short-lived, which is the wrong way
+  // round for a bug this module exists to prevent.
+  const last = Date.parse(rec.last_used_at || rec.started_at || 0) || 0;
+  const idleFor = now - last;
+  if (idleFor < rec.idle_ttl_ms) {
+    return { reap: false, idleFor, why: `used ${Math.round(idleFor / 1000)}s ago, ttl ${Math.round(rec.idle_ttl_ms / 1000)}s` };
+  }
+  return { reap: true, idleFor, why: `idle ${Math.round(idleFor / 1000)}s (ttl ${Math.round(rec.idle_ttl_ms / 1000)}s)` };
+}
+
+async function reap({ now = Date.now(), reason = 'idle' } = {}) {
+  const acted = [];
+  for (const rec of listRecords()) {
+    if (!isPidAlive(rec.pid)) {
+      clearRecord(rec.claim);
+      acted.push({ claim: rec.claim, action: 'cleared-stale-record', pid: rec.pid });
+      continue;
+    }
+
+    const verdict = isReapable(rec, now);
+    if (!verdict.reap) continue;
+
+    const result = await stopManaged(rec.claim, { reason: `${reason}: ${verdict.why}` });
+    acted.push({ claim: rec.claim, action: result.stopped ? 'stopped-idle' : 'left', pid: rec.pid, detail: result.reason });
+  }
+  return acted;
+}
+
+// ---------------------------------------------------------------------------
+// Status
+// ---------------------------------------------------------------------------
+
+// Is the server for this claim actually answering? One /health against
+// localhost. This is the question a supervisor should ask on a loop --
+// distinct from status()'s "does the recorded pid still exist", because a
+// process can be alive and wedged, and because an instance may be up without
+// any record of who started it.
+async function isUpFor(name) {
+  const claim = ports.get(name);
+  return server.isUp(claim.port, claim.host);
+}
+
+// Cheap; no network. `alive` is the recorded process still existing, which is
+// not quite the same as the server answering -- see isUpFor() for that.
+function status(name = SHARED_CLAIM) {
+  const rec = readRecord(name);
+  if (!rec) return { claim: name, managed: false, pid: null, alive: false };
+  return { claim: name, managed: true, pid: rec.pid, alive: isPidAlive(rec.pid), record: rec };
+}
+
+// Back-compat alias for the shared instance.
 function sharedStatus() {
-  const rec = readRecord();
-  if (!rec) return { managed: false, pid: null, alive: false };
-  return { managed: true, pid: rec.pid, alive: isPidAlive(rec.pid), record: rec };
+  return status(SHARED_CLAIM);
+}
+
+// Every managed instance, with liveness and idle age. What the CLI prints and
+// what a supervisor logs.
+function statusAll({ now = Date.now() } = {}) {
+  return listRecords().map((rec) => {
+    const last = Date.parse(rec.last_used_at || rec.started_at || 0) || 0;
+    return {
+      claim: rec.claim,
+      pid: rec.pid,
+      port: rec.port,
+      alive: isPidAlive(rec.pid),
+      policy: rec.reap_policy || 'supervised',
+      idle_ms: last ? now - last : null,
+      idle_ttl_ms: rec.idle_ttl_ms || 0,
+      started_by: rec.started_by,
+      record: rec,
+    };
+  });
 }
 
 module.exports = {
-  CLAIM,
+  SHARED_CLAIM,
   RUNTIME_DIR,
-  RECORD_FILE,
+  DEFAULT_IDLE_TTL_MS,
+  SPAWN_LOCK_STALE_MS,
+  TOUCH_THROTTLE_MS,
+
+  ensureManaged,
   ensureShared,
+  stopManaged,
   stopShared,
+  stopAll,
+  reap,
+  isReapable,
+  touch,
+
+  isUpFor,
+  status,
+  statusAll,
   sharedStatus,
+
   readRecord,
   writeRecord,
   clearRecord,
-  pidOnPort,
-  parseNetstatListener,
+  listRecords,
+  recordFile,
   acquireSpawnLock,
   releaseSpawnLock,
+  pidOnPort,
+  parseNetstatListener,
   isPidAlive,
-  SPAWN_LOCK_STALE_MS,
 };
+
+// ---------------------------------------------------------------------------
+// CLI:  node managed.js            -- what is running and who owns it
+//       node managed.js --reap     -- stop anything idle past its TTL
+//       node managed.js --stop-all -- stop everything this suite started
+// ---------------------------------------------------------------------------
+if (require.main === module) {
+  (async () => {
+    const arg = process.argv[2];
+
+    if (arg === '--stop-all') {
+      const results = await stopAll({ reason: 'stopped from CLI' });
+      if (!results.length) console.log('nothing managed is running');
+      for (const r of results) console.log(`${r.stopped ? 'stopped' : 'left  '}  ${r.claim} (pid ${r.pid}) -- ${r.reason}`);
+      return;
+    }
+
+    if (arg === '--reap') {
+      const acted = await reap({ reason: 'idle, reaped from CLI' });
+      if (!acted.length) console.log('nothing to reap');
+      for (const a of acted) console.log(`${a.action}  ${a.claim} (pid ${a.pid})${a.detail ? ` -- ${a.detail}` : ''}`);
+      return;
+    }
+
+    const rows = statusAll();
+    if (!rows.length) {
+      console.log('no managed llama-server instances recorded.');
+      console.log(`(records live in ${RUNTIME_DIR})`);
+      return;
+    }
+    const pad = (s, n) => String(s).padEnd(n);
+    console.log(`${pad('CLAIM', 30)}${pad('PID', 8)}${pad('PORT', 6)}${pad('ALIVE', 7)}${pad('POLICY', 12)}IDLE`);
+    for (const r of rows) {
+      const idle =
+        r.policy === 'idle'
+          ? `${Math.round((r.idle_ms ?? 0) / 1000)}s / ${Math.round(r.idle_ttl_ms / 1000)}s`
+          : '(supervised)';
+      console.log(`${pad(r.claim, 30)}${pad(r.pid, 8)}${pad(r.port, 6)}${pad(r.alive ? 'yes' : 'NO', 7)}${pad(r.policy, 12)}${idle}`);
+    }
+  })().catch((err) => {
+    console.error(err.message);
+    process.exitCode = 1;
+  });
+}

@@ -276,6 +276,72 @@ async function main() {
     assert.strictEqual(listenersOn(8090), 1, 'a second llama-server appeared');
   });
 
+  await check('the watcher restarts the server if it dies underneath it', async () => {
+    // The regression this locks down: ensureShared() used to run once at
+    // watcher startup and never again, so killing llama-server left the
+    // watcher polling forever against a dead backend. Nothing looked wrong --
+    // status.json kept updating and the status line kept rendering -- but
+    // session naming and semantic classification failed silently on every
+    // tick, because both are written to tolerate a null from the model.
+    const before = pidFromNetstat(8090);
+    assert.ok(before, 'no server to kill');
+    spawnSync('taskkill', ['/PID', String(before), '/F'], { windowsHide: true });
+    await until('server to go down', async () => !(await portUp()), 15_000);
+
+    // One poll interval plus a model load.
+    await until('watcher to restart it', () => portUp(), 90_000);
+    const after = pidFromNetstat(8090);
+    assert.ok(after && after !== before, `expected a new pid, got ${after} (was ${before})`);
+    assert.strictEqual(listenersOn(8090), 1, 'restart produced more than one listener');
+
+    // And the record must follow the new process, or the eventual shutdown
+    // would signal a pid that no longer exists.
+    await until('record to name the new pid', () => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(runtimeDir, 'chat-shared.json'), 'utf8')).pid === after;
+      } catch {
+        return false;
+      }
+    }, 20_000);
+  });
+
+  await check('an idle dedicated instance is reaped, a supervised one is not', async () => {
+    // No second model is loaded here -- that would cost 6.4 GB and a minute to
+    // prove a bookkeeping rule. A record naming a live process this test owns
+    // is enough to exercise the decision, and the accompanying assertion is
+    // the one that actually matters: the reaper must not touch the shared
+    // instance no matter how long it has sat idle.
+    const sleeper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 600000)'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    owned.push(sleeper);
+    const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    fs.writeFileSync(
+      path.join(runtimeDir, 'test-idle-instance.json'),
+      JSON.stringify({
+        claim: 'test-idle-instance',
+        pid: sleeper.pid,
+        port: 8099,
+        reap_policy: 'idle',
+        idle_ttl_ms: 1000,
+        started_at: stale,
+        last_used_at: stale,
+      })
+    );
+
+    // The watcher reaps on every tick.
+    await until(
+      'idle record to be dealt with',
+      () => !fs.existsSync(path.join(runtimeDir, 'test-idle-instance.json')),
+      30_000
+    );
+    // It is not the port holder, so the kill is correctly vetoed -- the record
+    // is cleared, the innocent process lives. Both halves of the contract.
+    assert.ok(isPidAlive(sleeper.pid), 'reaper killed a process that did not hold the port');
+    assert.ok(await portUp(), 'reaper took down the supervised shared instance');
+  });
+
   await check('a second watcher refuses to start while one holds the lock', async () => {
     const r = spawnSync(process.execPath, [path.join(CORE, 'watcher.js')], {
       encoding: 'utf8',

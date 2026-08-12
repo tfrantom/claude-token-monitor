@@ -101,24 +101,25 @@ check('returns null on garbage rather than throwing', () => {
 
 check('record round-trips and clears', () => {
   assert.strictEqual(managed.readRecord(), null, 'expected no record in a fresh runtime dir');
-  managed.writeRecord({ pid: 4321, port: 8090, started_by: 'test' });
+  managed.writeRecord('chat-shared', { pid: 4321, port: 8090, started_by: 'test' });
   assert.strictEqual(managed.readRecord().pid, 4321);
   managed.clearRecord();
   assert.strictEqual(managed.readRecord(), null);
 });
 
 check('a record without a numeric pid is treated as absent', () => {
-  fs.mkdirSync(path.dirname(managed.RECORD_FILE), { recursive: true });
-  fs.writeFileSync(managed.RECORD_FILE, JSON.stringify({ port: 8090 }));
+  const rf = managed.recordFile('chat-shared');
+  fs.mkdirSync(path.dirname(rf), { recursive: true });
+  fs.writeFileSync(rf, JSON.stringify({ port: 8090 }));
   assert.strictEqual(managed.readRecord(), null);
-  fs.writeFileSync(managed.RECORD_FILE, '{ truncated');
+  fs.writeFileSync(rf, '{ truncated');
   assert.strictEqual(managed.readRecord(), null);
   managed.clearRecord();
 });
 
 check('sharedStatus reports a dead recorded pid as not alive', () => {
   // A pid that has certainly exited: spawn one and wait for it.
-  managed.writeRecord({ pid: 999_999, port: 8090 });
+  managed.writeRecord('chat-shared', { pid: 999_999, port: 8090 });
   const st = managed.sharedStatus();
   assert.strictEqual(st.managed, true);
   assert.strictEqual(st.alive, false);
@@ -140,7 +141,7 @@ async function asyncChecks() {
   });
 
   await checkAsync('stopShared clears a record whose process is already gone', async () => {
-    managed.writeRecord({ pid: 999_999, port: 8090 });
+    managed.writeRecord('chat-shared', { pid: 999_999, port: 8090 });
     const r = await managed.stopShared({ reason: 'test' });
     assert.strictEqual(r.stopped, false);
     assert.match(r.reason, /already gone/);
@@ -152,7 +153,7 @@ async function asyncChecks() {
     // emphatically not llama-server. Killing it is the one genuinely
     // destructive mistake this module could make.
     const foreign = liveForeignPid();
-    managed.writeRecord({ pid: foreign, port: 8090 });
+    managed.writeRecord('chat-shared', { pid: foreign, port: 8090 });
     const r = await managed.stopShared({ reason: 'test' });
     assert.strictEqual(r.stopped, false, `stopShared reported killing pid ${foreign}`);
     assert.ok(managed.isPidAlive(foreign), 'stopShared killed an unrelated live process');
@@ -165,9 +166,9 @@ async function asyncChecks() {
 // ---------------------------------------------------------------------------
 
 check('the spawn lock is re-entrant for the holder', () => {
-  assert.strictEqual(managed.acquireSpawnLock(), true);
-  assert.strictEqual(managed.acquireSpawnLock(), true, 'a process should not deadlock against its own lock');
-  managed.releaseSpawnLock();
+  assert.strictEqual(managed.acquireSpawnLock('chat-shared'), true);
+  assert.strictEqual(managed.acquireSpawnLock('chat-shared'), true, 'a process should not deadlock against its own lock');
+  managed.releaseSpawnLock('chat-shared');
 });
 
 check('a lock held by another live process is not granted', () => {
@@ -176,7 +177,7 @@ check('a lock held by another live process is not granted', () => {
     path.join(cfg.LLAMA_RUNTIME_DIR, 'chat-shared.spawn.lock'),
     JSON.stringify({ pid: other, at_ms: Date.now() })
   );
-  assert.strictEqual(managed.acquireSpawnLock(), false);
+  assert.strictEqual(managed.acquireSpawnLock('chat-shared'), false);
 });
 
 check('a stale lock is taken over', () => {
@@ -186,17 +187,152 @@ check('a stale lock is taken over', () => {
     // Live pid, but older than the staleness ceiling: a spawner that hung.
     JSON.stringify({ pid: other, at_ms: Date.now() - managed.SPAWN_LOCK_STALE_MS - 1000 })
   );
-  assert.strictEqual(managed.acquireSpawnLock(), true);
-  managed.releaseSpawnLock();
+  assert.strictEqual(managed.acquireSpawnLock('chat-shared'), true);
+  managed.releaseSpawnLock('chat-shared');
 });
 
 check('releasing a lock held by someone else is a no-op', () => {
   const other = liveForeignPid();
   const lockPath = path.join(cfg.LLAMA_RUNTIME_DIR, 'chat-shared.spawn.lock');
   fs.writeFileSync(lockPath, JSON.stringify({ pid: other, at_ms: Date.now() }));
-  managed.releaseSpawnLock();
+  managed.releaseSpawnLock('chat-shared');
   assert.ok(fs.existsSync(lockPath), 'released a lock belonging to another process');
   fs.unlinkSync(lockPath);
+});
+
+// ---------------------------------------------------------------------------
+// the generalized registry: many instances, two reap policies
+// ---------------------------------------------------------------------------
+
+const MIN = 60 * 1000;
+
+function idleRec(overrides = {}) {
+  return {
+    pid: 4242,
+    port: 8099,
+    reap_policy: 'idle',
+    idle_ttl_ms: 15 * MIN,
+    started_at: new Date(Date.now() - 60 * MIN).toISOString(),
+    last_used_at: new Date(Date.now() - 60 * MIN).toISOString(),
+    ...overrides,
+  };
+}
+
+check('records are per-claim and listed together', () => {
+  managed.clearRecord('chat-shared');
+  managed.writeRecord('chat-shared', { pid: 1, port: 8090, reap_policy: 'supervised', idle_ttl_ms: 0 });
+  managed.writeRecord('some-embed', idleRec({ pid: 2, port: 8091 }));
+  const names = managed.listRecords().map((r) => r.claim).sort();
+  assert.deepStrictEqual(names, ['chat-shared', 'some-embed']);
+  assert.strictEqual(managed.readRecord('some-embed').port, 8091);
+  managed.clearRecord('chat-shared');
+  managed.clearRecord('some-embed');
+});
+
+check('a claim name cannot escape the runtime directory', () => {
+  // Claim names come from ports.js, which is source rather than user input --
+  // but a value that reaches the filesystem is constrained rather than
+  // trusted, because the cost of being wrong here is writing outside the
+  // runtime dir.
+  assert.throws(() => managed.recordFile('../../evil'), /unsafe claim name/);
+  assert.throws(() => managed.recordFile('a/b'), /unsafe claim name/);
+  assert.throws(() => managed.recordFile(''), /unsafe claim name/);
+  assert.ok(managed.recordFile('my-embedding-server').endsWith('my-embedding-server.json'));
+});
+
+check('a supervised instance is never idle-reaped, however old', () => {
+  // The shared chat server exists to be warm. Reaping it after a quiet spell
+  // would mean paying a model load the next time the user types a word.
+  const ancient = {
+    pid: 1,
+    port: 8090,
+    reap_policy: 'supervised',
+    idle_ttl_ms: 0,
+    last_used_at: new Date(Date.now() - 30 * 24 * 60 * MIN).toISOString(),
+  };
+  assert.strictEqual(managed.isReapable(ancient).reap, false);
+});
+
+check('an idle instance past its TTL is reapable', () => {
+  const v = managed.isReapable(idleRec());
+  assert.strictEqual(v.reap, true);
+  assert.match(v.why, /idle \d+s/);
+});
+
+check('an idle instance inside its TTL is left alone', () => {
+  const v = managed.isReapable(idleRec({ last_used_at: new Date(Date.now() - 1 * MIN).toISOString() }));
+  assert.strictEqual(v.reap, false);
+});
+
+check('an instance never touched still ages out from started_at', () => {
+  // The failure this guards: falling back to "now" when last_used_at is
+  // absent would make a client that forgets to touch() immortal, which is
+  // precisely backwards for the leak this module exists to close.
+  const rec = idleRec({ last_used_at: undefined });
+  assert.strictEqual(managed.isReapable(rec).reap, true);
+});
+
+check('touch refreshes last_used_at, and throttles repeat writes', () => {
+  managed.writeRecord('touch-test', idleRec({ pid: process.pid }));
+  assert.strictEqual(managed.touch('touch-test'), true);
+  const first = managed.readRecord('touch-test').last_used_at;
+  assert.ok(Date.now() - Date.parse(first) < 5000, 'touch should have written a fresh timestamp');
+
+  // Immediately again: inside the throttle window, so the timestamp must not
+  // move. A per-request client calls this constantly.
+  managed.touch('touch-test');
+  assert.strictEqual(managed.readRecord('touch-test').last_used_at, first);
+  managed.clearRecord('touch-test');
+});
+
+check('touch on an unknown claim is a no-op, not a crash', () => {
+  assert.strictEqual(managed.touch('never-recorded'), false);
+});
+
+// Sequenced rather than fired off at top level: these each write and delete
+// records in a shared directory, so running them concurrently with each other
+// (or with the summary) would make the suite flaky for reasons that have
+// nothing to do with the code under test.
+async function registryAsyncChecks() {
+  await checkAsync('reap clears records whose process is gone', async () => {
+    managed.writeRecord('dead-one', idleRec({ pid: 999_999 }));
+    const acted = await managed.reap();
+    assert.ok(
+      acted.some((a) => a.claim === 'dead-one' && a.action === 'cleared-stale-record'),
+      `expected dead-one to be cleared, got ${JSON.stringify(acted)}`
+    );
+    assert.strictEqual(managed.readRecord('dead-one'), null);
+  });
+
+  await checkAsync('reap will not kill a live pid that does not hold the port', async () => {
+    // Reapable by policy, but stopManaged's port check must still veto it.
+    // Both halves have to hold: the reaper picks the right candidates, and the
+    // stopper refuses to act on a candidate it cannot verify.
+    const foreign = liveForeignPid();
+    managed.writeRecord('idle-but-foreign', idleRec({ pid: foreign, port: 8099 }));
+    await managed.reap();
+    assert.ok(managed.isPidAlive(foreign), 'reap killed an unrelated live process');
+    managed.clearRecord('idle-but-foreign');
+  });
+
+  await checkAsync('stopAll reports on every record and leaves none behind', async () => {
+    managed.writeRecord('gone-a', idleRec({ pid: 999_998 }));
+    managed.writeRecord('gone-b', idleRec({ pid: 999_997 }));
+    const results = await managed.stopAll({ reason: 'test' });
+    const claims = results.map((r) => r.claim).sort();
+    assert.ok(claims.includes('gone-a') && claims.includes('gone-b'), `got ${claims.join(',')}`);
+    assert.strictEqual(managed.listRecords().length, 0, 'stopAll left records behind');
+  });
+}
+
+check('statusAll reports liveness and idle age per instance', () => {
+  managed.writeRecord('status-test', idleRec({ pid: process.pid, last_used_at: new Date(Date.now() - 2 * MIN).toISOString() }));
+  const row = managed.statusAll().find((r) => r.claim === 'status-test');
+  assert.ok(row, 'status-test missing from statusAll');
+  assert.strictEqual(row.alive, true);
+  assert.strictEqual(row.policy, 'idle');
+  assert.ok(row.idle_ms >= 2 * MIN - 5000, `idle_ms looks wrong: ${row.idle_ms}`);
+  managed.clearRecord('status-test');
 });
 
 // ---------------------------------------------------------------------------
@@ -265,6 +401,7 @@ check('the runtime dir is not inside the repo', () => {
 });
 
 asyncChecks()
+  .then(registryAsyncChecks)
   .then(() => {
     for (const p of sleepers) {
       try {

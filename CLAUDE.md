@@ -61,19 +61,40 @@ same second both see nothing on 8090 and both spawn, so the spawn is serialised
 behind a lock in `llama-local-server/managed.js` and the loser waits for the
 winner rather than failing to bind.
 
-**Ownership of that server is on disk, not in a variable.** `ensureRunning()`'s
-`owned` flag is per-process and cannot express "live as long as some session
-needs it": a watcher that *reused* a server started by a one-shot skill call
-has `owned === false` and used to leave the model resident forever. The record
-at `~/.claude/llama-local-server/chat-shared.json` is what fixes that, and it
-is also why a new watcher can adopt a server orphaned by a hard kill. Two rules
-follow:
+**Ownership is on disk, not in a variable.** `ensureRunning()`'s `owned` flag
+is per-process and cannot express "live as long as someone needs it": nearly
+every process that starts one of these servers is short-lived — a 100ms status
+line render, a one-shot skill call, a CLI search — so the server must outlive
+all of them, and its lifetime cannot belong to any of them. Records live in
+`~/.claude/llama-local-server/<claim>.json`, one per port claim. That is also
+why a new watcher can adopt a server orphaned by a hard kill.
+
+Three rules follow:
 
 - **No record means no kill.** A `llama-server` started by hand is reused and
-  left alone.
-- **Anything in this suite that spawns the shared instance must write the
-  record**, including the copies that cannot `require` across the repo
-  boundary (`local-inference-skill`'s client). A spawn that skips it is a leak.
+  left alone, forever.
+- **Anything that spawns one must write the record** — including copies that
+  cannot `require` across a repo boundary (`local-inference-skill`'s installed
+  client, and the separate repos that vendor this package). A spawn that skips
+  it is a leak nobody can clean up. The runtime dir is machine-level precisely
+  so those callers can find it.
+- **Before any kill, the recorded pid is checked against the pid actually
+  holding the port** (netstat `LISTENING` row — never `ESTABLISHED`, which
+  carries the *client's* pid, usually the watcher's). Recycled pids are the one
+  way automatic shutdown could shoot a bystander.
+
+**Two reap policies, because there are two kinds of instance.** `supervised`
+(the shared chat server) is never idle-reaped — it exists to be warm — and dies
+with the watcher. `idle` (dedicated instances a one-shot CLI stands up and
+walks away from) is stopped after `idle_ttl_ms` with no `touch()`. Nothing was
+ever coming back for those, which is how a 6.4 GB model ends up resident until
+reboot.
+
+**The watcher re-ensures the shared server every tick, not just at startup.**
+Do not "optimise" that away. Ensure-once made the watcher the weakest link in
+its own chain: kill the server and it polled a dead backend forever, with
+naming and classification failing silently because both are written to tolerate
+a null from the model. Nothing looked wrong.
 
 If you need to restart the watcher, kill the old one first. Never start a
 second to "test something."

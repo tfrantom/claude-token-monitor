@@ -100,13 +100,34 @@ and closing the last one takes it back down:
 status line render  ──▶  watcher  ──▶  shared llama-server (:8090)
   (every render)          (daemon)       (~2.5 GB resident)
 
-no live sessions for 2 min  ──▶  watcher exits  ──▶  llama-server stopped
+no live sessions for 2 min  ──▶  watcher exits  ──▶  every managed server stopped
 ```
 
 Each link owns exactly the thing below it. The status line is the entry point
 because Claude Code guarantees to invoke it — on every render of every session
 — which makes it a free liveness signal. On the happy path that check is two
 syscalls; it only spawns when the lock file names no live process.
+
+The watcher **re-checks the server on every tick**, not just at startup, so
+killing `llama-server` (task manager, a crash, an OOM) is repaired within one
+poll interval. That is worth stating because the failure it replaced was
+invisible: the watcher kept polling against a dead backend, `status.json` kept
+updating, the status line kept rendering, and only session naming and semantic
+classification quietly stopped working.
+
+It is also the machine's **reaper**. Any tool can register a llama-server it
+started — see `managed.ensureManaged()` — and instances marked `idle` are
+stopped once they go unused past their TTL. The shared chat instance is marked
+`supervised` instead: never idle-reaped, because it exists to be warm, and it
+goes away with the watcher. Since the records live in a machine-level runtime
+directory rather than in this repo, the watcher reaps instances started by
+installed skill copies and by separate repositories too:
+
+```sh
+node packages/llama-local-server/managed.js            # what is running, and who owns it
+node packages/llama-local-server/managed.js --reap     # stop anything idle past its TTL
+node packages/llama-local-server/managed.js --stop-all # stop everything this suite started
+```
 
 - **Start it yourself** (to watch its logs) with `node packages/token-monitor-core/watcher.js`.
 - **Pause autostart** by creating `packages/token-monitor-core/state/autostart.disabled`,

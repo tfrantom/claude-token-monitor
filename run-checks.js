@@ -106,7 +106,7 @@ const CHECKS = [
     runner: 'node',
     timeoutMs: 30_000,
     safety: 'safe',
-    what: '29 offline assertions over the core: the rate card (dated intro pricing, fast-mode premium, cache multipliers, the [1m] variant, unknown models), transcript parsing (per-message.id usage, block proration, injected-user-turn filtering, torn lines), the statusline renderer against fixtures, and the session-naming helpers.',
+    what: '38 offline assertions over the core: the rate card (dated intro pricing, fast-mode premium, cache multipliers, the [1m] variant, unknown models), transcript parsing (per-message.id usage, block proration, injected-user-turn filtering, torn lines), the statusline renderer against fixtures, and the session-naming helpers.',
     why: 'Pure logic. Transcript fixtures are written to a fresh mkdtemp dir and removed afterwards; the renderer is driven through renderLine\'s test-only status override, so the live status.json the watcher is actively rewriting is never read or touched. No network, no LLM, no watcher.',
   },
   {
@@ -115,7 +115,7 @@ const CHECKS = [
     runner: 'node',
     timeoutMs: 30_000,
     safety: 'safe',
-    what: "21 offline assertions over the code that decides whether to start or kill a process: netstat LISTENING-row parsing (including that an ESTABLISHED row's client pid is never mistaken for the server's), the on-disk ownership record, stopShared's three refusals -- no record, dead pid, live pid that does not hold the port -- the spawn lock's re-entrancy and staleness, and Ollama manifest resolution.",
+    what: "33 offline assertions over the code that decides whether to start or kill a process: netstat LISTENING-row parsing (including that an ESTABLISHED row's client pid is never mistaken for the server's), the on-disk ownership record, stopShared's three refusals -- no record, dead pid, live pid that does not hold the port -- the spawn lock's re-entrancy and staleness, the per-claim registry (many instances, supervised vs idle reap policies, touch throttling, claim-name path safety), and Ollama manifest resolution.",
     why: 'Redirects LLAMA_RUNTIME_DIR at a mkdtemp dir before requiring anything, so the real record file is never touched. Spawns nothing but short-lived sleeping node processes (used as stand-in "live pids" and killed on exit); never starts llama-server, never makes a network call.',
   },
   {

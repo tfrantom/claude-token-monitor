@@ -561,12 +561,21 @@ async function main() {
   const shutdown = async (why) => {
     if (shuttingDown) return; // a second SIGINT must not race the first one's kill
     shuttingDown = true;
-    const result = await managed.stopShared({ reason: why });
-    console.log(
-      result.stopped
-        ? `[watcher] stopped llama-server pid ${result.pid} (${why})`
-        : `[watcher] left llama-server running: ${result.reason}`
-    );
+    // stopAll, not stopShared: by the time the last Claude Code session is
+    // gone, nothing this suite started should survive it -- including
+    // dedicated instances started by a one-shot CLI that exited long ago and
+    // was never going to come back and clean up after itself.
+    const results = await managed.stopAll({ reason: why });
+    if (!results.length) {
+      console.log(`[watcher] nothing managed to stop (${why})`);
+    }
+    for (const r of results) {
+      console.log(
+        r.stopped
+          ? `[watcher] stopped ${r.claim} pid ${r.pid} (${why})`
+          : `[watcher] left ${r.claim} running: ${r.reason}`
+      );
+    }
     releaseLock();
     process.exit(0);
   };
@@ -587,6 +596,42 @@ async function main() {
 
   for (;;) {
     try {
+      // Re-ensure BEFORE the tick, because the tick is what uses the server.
+      //
+      // This used to run once at startup, which quietly made the watcher the
+      // weakest link in its own chain: kill llama-server (task manager, a
+      // crash, an OOM) and the watcher kept polling forever against a dead
+      // backend. Nothing looked wrong -- status.json still updated, the status
+      // line still rendered -- but session naming and semantic classification
+      // failed on every tick and silently returned null, which the callers are
+      // designed to tolerate. Found by killing the server by hand and watching
+      // the watcher not care.
+      //
+      // Cheap in the normal case: one /health request against localhost.
+      if (!(await managed.isUpFor(shared.claim))) {
+        const again = await managed.ensureShared({ startedBy: `watcher pid ${process.pid}` });
+        console.log(
+          `[watcher] llama-server was gone -- ${again.started ? 'restarted' : 'found'} on port ${again.port}` +
+            `${again.pid ? ` (pid ${again.pid})` : ''}`
+        );
+      } else {
+        // Keeps the shared instance's record fresh. It is 'supervised' and so
+        // never idle-reaped, but the timestamp is what `managed.js`'s CLI
+        // shows and what makes an abandoned record obvious.
+        managed.touch(shared.claim);
+      }
+
+      // Reap dedicated instances nobody is using any more. The watcher is the
+      // only long-lived process on the machine that is guaranteed to be
+      // running whenever any of this matters, which makes it the right reaper
+      // -- including for instances started by separate repositories, since
+      // the records are machine-level.
+      for (const a of await managed.reap()) {
+        if (a.action !== 'cleared-stale-record') {
+          console.log(`[watcher] ${a.action} ${a.claim} (pid ${a.pid})${a.detail ? ` -- ${a.detail}` : ''}`);
+        }
+      }
+
       const { liveCount, registryKnown } = await tick(namesCache, semanticCache);
 
       // Only an authoritative "zero sessions" counts. An unreadable registry

@@ -47,14 +47,32 @@ instance actually needs, which is "live as long as some Claude Code session
 needs you". A watcher that reused a server started ten minutes earlier by a
 one-shot skill call has `owned === false` and leaves ~2.5 GB resident forever.
 
-`managed.js` records ownership **on disk** instead
-(`~/.claude/llama-local-server/chat-shared.json`), so it survives the process
-that created it and an abrupt kill of that process:
+`managed.js` records ownership **on disk** instead, one record per port claim
+in `~/.claude/llama-local-server/<claim>.json`, so it survives the process that
+created it and an abrupt kill of that process:
 
 ```js
-await managed.ensureShared({ startedBy: 'watcher pid 123' })
-await managed.stopShared({ reason: 'no Claude sessions running' })
+await managed.ensureShared({ startedBy: 'watcher pid 123' })      // :8090
+await managed.ensureManaged('my-embed', { policy: 'idle', … })    // any claim
+managed.touch('my-embed')          // "still wanted" -- restarts the idle clock
+await managed.reap()               // stop whatever went idle past its TTL
+await managed.stopAll({ reason: 'no Claude sessions running' })
 ```
+
+Two policies, and picking the wrong one is the mistake to avoid:
+
+- **`supervised`** — lifetime tied to a supervisor that is itself tied to
+  something real. Only the shared chat instance. Never idle-reaped: it exists
+  to be warm, and reaping it after a quiet spell means paying a model load the
+  next time the user types a word.
+- **`idle`** — for anything a one-shot CLI stands up and walks away from.
+  Reaped after `idle_ttl_ms` with no `touch()`. Without this, "outlives its
+  caller" means "resident until reboot".
+
+Any process may call `reap()`; the watcher does it every tick, which makes it
+the de-facto reaper on this machine — including for instances started by
+installed skill copies and by separate repositories, since the records are
+machine-level.
 
 Rules that fall out of it, none of them optional:
 
