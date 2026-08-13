@@ -80,6 +80,24 @@ const CHECKS = [
     why: 'Read-only against transcripts and status.json. No network, no LLM, no writes at all.',
   },
   {
+    name: 'token-monitor.nvim',
+    script: 'packages/token-monitor.nvim/test.js',
+    runner: 'node',
+    timeoutMs: 60_000,
+    safety: 'safe',
+    what: "10 renderer assertions under headless Neovim: that vim.json.decode's null sentinel is truthy userdata and that denil() clears it recursively, that an all-null activity renders rather than throwing, per-state glyphs, the unknown-state fallback, the show_activity / show_activity_detail switches, and that detail never leaks onto a non-active session.",
+    why: 'Runs `nvim --clean --headless` against fixtures in-process; reads no status.json, writes nothing, makes no network call. Exits 3 (SKIP) on a machine with no nvim on PATH rather than failing.',
+  },
+  {
+    name: 'comment-auditor',
+    script: 'projects/comment-auditor/test.js',
+    runner: 'node',
+    timeoutMs: 30_000,
+    safety: 'safe',
+    what: "47 offline assertions: the comment scanner against strings/regex literals/template interpolations/Lua/PowerShell, the protected/keep/remove rule passes, verdict mapping (including that a model label can never become a deletion), line scoping, the edit-application path, the verdict cache, the --apply quiescence gate, and transcript.js's fileWrites extraction.",
+    why: 'Wholly offline. The classifier is stubbed, so no model call is made and port 8090 is never touched. Fixtures and the verdict cache go to a mkdtemp dir redirected via COMMENT_AUDITOR_STATE_DIR before requiring config; quiescence is driven from literal status objects, never the live status.json.',
+  },
+  {
     name: 'local-inference-skill',
     script: 'projects/local-inference-skill/selftest.js',
     runner: 'node',
@@ -108,7 +126,6 @@ const CHECKS = [
 
 const UNCOVERED = [
   ['packages/token-usage-skill', 'no check; lookup.js is a pure renderer over status.json'],
-  ['packages/token-monitor.nvim', 'no check (lua)'],
 ];
 
 function parseArgs(argv) {

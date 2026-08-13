@@ -129,11 +129,16 @@ function pushUserText(userTexts, raw) {
   userTexts.push(text);
 }
 
+// Consumed by projects/comment-auditor to tell whether a file is being edited
+// right now; the path is whatever the tool was handed, resolved by the reader.
+const FILE_MUTATING_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+
 function classifySession(transcriptPath) {
   const totals = emptyTotals();
   const turns = [];
   const userTexts = [];
   const agentUses = [];
+  const fileWrites = [];
   let lastTimestamp = null;
   const modelsSeen = new Set();
 
@@ -173,6 +178,9 @@ function classifySession(transcriptPath) {
         if (block.type === 'tool_use' && block.name === 'Agent') {
           agentUses.push({ toolUseId: block.id, description: block.input?.description || null });
         }
+        if (block.type === 'tool_use' && FILE_MUTATING_TOOLS.has(block.name) && block.input?.file_path) {
+          fileWrites.push({ path: block.input.file_path, at: entry.timestamp || null });
+        }
       }
       continue;
     }
@@ -198,6 +206,7 @@ function classifySession(transcriptPath) {
     lastTimestamp,
     models: [...modelsSeen],
     agentUses,
+    fileWrites,
   };
 }
 

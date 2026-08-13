@@ -37,7 +37,29 @@ function fmtCost(n) {
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
 const CYAN = '\x1b[36m';
+const GREEN = '\x1b[32m';
+const YELLOW = '\x1b[33m';
+const RED = '\x1b[31m';
 const RESET = '\x1b[0m';
+
+// Glyph before colour: the bar is read at a glance and across terminals that
+// render 256-colour and dim differently, so shape has to carry the meaning on
+// its own. Unknown states fall through to a neutral marker rather than being
+// dropped, so a newer publisher's vocabulary still shows up on an older bar.
+const ACTIVITY = {
+  working: { glyph: '▶', color: CYAN },
+  waiting_agents: { glyph: '⋯', color: CYAN },
+  waiting_user: { glyph: '?', color: YELLOW },
+  done: { glyph: '✓', color: GREEN },
+  blocked: { glyph: '!', color: RED },
+  idle: { glyph: '·', color: DIM },
+  ended: { glyph: '·', color: DIM },
+};
+
+function activityMark(activity) {
+  if (!activity || !activity.state) return null;
+  return ACTIVITY[activity.state] || { glyph: '•', color: DIM };
+}
 
 function fmtCostShort(n) {
   return n >= 10 ? `$${Math.round(n)}` : `$${n.toFixed(1)}`;
@@ -50,18 +72,22 @@ function totalTokens(t) {
 function renderSession(s, isActive) {
   const t = s.totals;
   const agents = s.agents || [];
+  const mark = activityMark(s.activity);
 
   if (isActive) {
     const parts = agents.map((a) => `${fmtK(a.tokens)}-${fmtCostShort(a.cost_usd).replace('$', '')}`);
     const agentStr = parts.length ? `${parts.join('/')} · ` : '';
+    const detail = s.activity && s.activity.detail ? ` ${DIM}${s.activity.detail}${RESET}` : '';
+    const dot = mark ? `${mark.color}${mark.glyph}${RESET}` : `${CYAN}●${RESET}`;
     return (
-      `${BOLD}${CYAN}● ${s.name}${RESET} ` +
+      `${dot} ${BOLD}${CYAN}${s.name}${RESET}${detail} ` +
       `${DIM}(${agentStr}${fmtK(totalTokens(t))}/${fmtCostShort(t.cost_usd)})${RESET}`
     );
   }
 
+  const dot = mark ? `${mark.color}${mark.glyph}${RESET}` : '';
   const badge = agents.length ? `${DIM} ${agents.length}A${RESET}` : '';
-  return `${DIM}${s.name}${RESET}${badge}${DIM} ${fmtCostShort(t.cost_usd)}${RESET}`;
+  return `${dot}${dot ? ' ' : ''}${DIM}${s.name}${RESET}${badge}${DIM} ${fmtCostShort(t.cost_usd)}${RESET}`;
 }
 
 function watcherMessage(watcherState) {
@@ -143,4 +169,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { renderLine, renderSession, fmtK, fmtCostShort, watcherMessage };
+module.exports = { renderLine, renderSession, fmtK, fmtCostShort, watcherMessage, activityMark, ACTIVITY };

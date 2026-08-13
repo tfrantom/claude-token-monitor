@@ -17,6 +17,7 @@ to a README, it goes in that project's `CLAUDE.md` instead.
 | [`ask-question-prefilter`](ask-question-prefilter/CLAUDE.md) | Wrapper-not-patch, the suppression bar, turning it on |
 | [`usage-history-rollups`](usage-history-rollups/CLAUDE.md) | Snapshot triggers, the history schema, cumulative-not-delta |
 | [`per-project-cost-attribution`](per-project-cost-attribution/CLAUDE.md) | Per-turn attribution, cwd→project resolution, the slice schema |
+| [`comment-auditor`](comment-auditor/CLAUDE.md) | Rules before the model, the uncalibrated-confidence finding, the quiescence gate |
 
 ## These are finished packages that live under `projects/`
 
@@ -127,6 +128,12 @@ workarounds away.
   compared from before that date see a step change.
 - **Transcript parsing is 8ms per tick** against the active set. It does not
   need an mtime cache.
+- **The 3B model's confidence is not calibrated.** Five identical
+  `comment-auditor` runs at `temperature: 0.1` gave 2 findings at confidence 0.5
+  four times and 4 findings at confidence 1.0 once — and, before a rule caught
+  it first, labelled a measured finding as a restatement at confidence 1.0. A
+  confidence threshold is not a safety mechanism anywhere in this suite; decide
+  in code. See [`comment-auditor/CLAUDE.md`](comment-auditor/CLAUDE.md).
 - **The `ask-question-prefilter` tightening guard is load-bearing.** Given
   "Should I use tabs or spaces?" with a `-Detail` implying tabs, the 3B model
   returns `"Use tabs consistently."` — shorter, but now a statement asserting

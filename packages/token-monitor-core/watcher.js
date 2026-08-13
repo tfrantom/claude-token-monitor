@@ -7,6 +7,7 @@ const { classifySession } = require('./lib/transcript');
 const managed = require('../llama-local-server/managed');
 const { nameSession } = require('./lib/llm-client');
 const { classifyTurn } = require('./lib/semantic-classifier');
+const signals = require('./lib/signals');
 
 fs.mkdirSync(cfg.STATE_DIR, { recursive: true });
 
@@ -286,6 +287,8 @@ function mergeSubagent(parent, sub) {
     if (typeof value === 'number') parent.totals[key] = (parent.totals[key] || 0) + value;
   }
   parent.turns.push(...sub.turns);
+  // A subagent's writes are the parent session's writes: same race, same file.
+  if (sub.fileWrites) parent.fileWrites.push(...sub.fileWrites);
   for (const m of sub.models) if (!parent.models.includes(m)) parent.models.push(m);
   if (sub.lastTimestamp && (!parent.lastTimestamp || sub.lastTimestamp > parent.lastTimestamp)) {
     parent.lastTimestamp = sub.lastTimestamp;
@@ -309,6 +312,61 @@ function buildAgentList(parsed, byToolUseId) {
     });
   }
   return agents;
+}
+
+// Newest write per path, recent ones only: the consumers ask "is this file
+// being edited right now", which an unbounded history answers no better.
+function recentWrites(fileWrites, now) {
+  const cutoff = now - cfg.RECENT_WRITES_WINDOW_MS;
+  const newest = new Map();
+  for (const w of fileWrites || []) {
+    const at = Date.parse(w.at);
+    if (!Number.isFinite(at) || at < cutoff) continue;
+    const prev = newest.get(w.path);
+    if (!prev || at > Date.parse(prev.at)) newest.set(w.path, w);
+  }
+  return [...newest.values()].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+}
+
+// What a session says it is doing, falling back to what can be inferred.
+//
+// A published signal is treated as superseded once the transcript has kept
+// growing well past it: publishing writes a tool call to the transcript, so
+// "newer than the signal" is always true by a second or two, but a session
+// that genuinely went back to work leaves a much wider gap. Without this a
+// stale "done" would sit on the bar until its TTL expired.
+function buildActivity(signal, agents, ended, lastActivityMs, now = Date.now()) {
+  const running = (agents || []).length;
+  const writingNow = Number.isFinite(lastActivityMs) && now - lastActivityMs <= cfg.ACTIVITY_ACTIVE_WINDOW_MS;
+
+  let inferred = { state: null, detail: null, source: null };
+  if (running) {
+    inferred = {
+      state: 'waiting_agents',
+      detail: `${running} agent${running === 1 ? '' : 's'} running`,
+      source: 'inferred',
+    };
+  } else if (writingNow) {
+    inferred = { state: 'working', detail: null, source: 'inferred' };
+  }
+
+  if (ended) return { state: 'ended', detail: null, at: null, source: 'watcher', agents: [] };
+
+  const at = signal && signal.at ? Date.parse(signal.at) : NaN;
+  const superseded =
+    Number.isFinite(at) && Number.isFinite(lastActivityMs) && lastActivityMs - at > cfg.SIGNAL_SUPERSEDE_MS;
+
+  if (signal && signal.state && !superseded) {
+    return {
+      state: signal.state,
+      detail: signal.detail,
+      at: signal.at,
+      source: signal.source || 'signal',
+      agents: signal.agents || [],
+    };
+  }
+
+  return { ...inferred, at: null, agents: (signal && signal.agents) || [] };
 }
 
 async function tick(namesCache, semanticCache) {
@@ -335,6 +393,8 @@ async function tick(namesCache, semanticCache) {
     await backfillSemantic(semanticCache, parsedByFile.map((p) => p.parsed));
   }
 
+  const signalsBySession = signals.bySession();
+
   const sessions = {};
   for (const { f, parsed, ended, agents } of parsedByFile) {
     const name = ended
@@ -350,12 +410,15 @@ async function tick(namesCache, semanticCache) {
       models: parsed.models,
       totals: parsed.totals,
       agents: agents || [],
+      recent_writes: recentWrites(parsed.fileWrites, Date.now()),
+      activity: buildActivity(signalsBySession[f.sessionId], agents, ended, f.mtimeMs),
     };
     if (cfg.SEMANTIC_CLASSIFICATION_ENABLED) session.semantic = aggregateSemantic(parsed.turns, semanticCache);
     sessions[f.sessionId] = session;
   }
 
   writeJsonAtomic(cfg.STATUS_FILE, { updated_at: new Date().toISOString(), sessions });
+  signals.prune(Object.keys(sessions));
 
   return { liveCount: liveSessionIds.size, registryKnown };
 }
@@ -486,4 +549,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { sameTopic, topicWords, joinRecent };
+module.exports = { sameTopic, topicWords, joinRecent, buildActivity, recentWrites };

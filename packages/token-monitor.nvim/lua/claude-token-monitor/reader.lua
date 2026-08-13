@@ -1,5 +1,25 @@
 local M = {}
 
+-- vim.json.decode maps JSON null to vim.NIL, a userdata sentinel that is
+-- TRUTHY in Lua -- only nil and false are falsy. So `if v then` passes for a
+-- field that is not there, and the value reaches string concatenation as
+-- userdata. Normalising here rather than at each use site is deliberate: this
+-- is the one choke point, and status.json grows nullable fields over time.
+local function denil(v)
+  if v == vim.NIL then
+    return nil
+  end
+  if type(v) ~= "table" then
+    return v
+  end
+  for k, inner in pairs(v) do
+    v[k] = denil(inner)
+  end
+  return v
+end
+
+M.denil = denil
+
 -- nil on any failure (missing, empty, mid-write) -- "no data this tick", not an error.
 function M.read_status(path)
   local f = io.open(path, "r")
@@ -15,7 +35,7 @@ function M.read_status(path)
   if not ok then
     return nil
   end
-  return decoded
+  return denil(decoded)
 end
 
 -- Must mirror Claude Code's own project-directory naming: "C:\projects" -> "C--projects".

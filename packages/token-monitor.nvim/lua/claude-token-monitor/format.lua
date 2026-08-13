@@ -54,6 +54,37 @@ local function agent_pairs(agents)
   return table.concat(parts, "/")
 end
 
+local ACTIVITY_HL = {
+  done = "activity_done",
+  working = "activity_working",
+  waiting_user = "activity_waiting",
+  waiting_agents = "activity_waiting",
+  blocked = "activity_blocked",
+}
+
+-- -> icon, highlight-group-name, detail  (all nil when there is nothing to show)
+--
+-- Types are checked rather than truthiness: reader.lua normalises vim.NIL
+-- away, but this is also reachable with a raw vim.json.decode result, and
+-- vim.NIL is truthy.
+function M.activity_parts(s, opts)
+  if not opts.show_activity then
+    return nil
+  end
+  local a = s.activity
+  if type(a) ~= "table" or type(a.state) ~= "string" then
+    return nil
+  end
+  local icons = opts.activity_icons or {}
+  local icon = icons[a.state] or icons.unknown
+  local hl = opts.highlights[ACTIVITY_HL[a.state] or ""] or opts.highlights.dim
+  local detail = nil
+  if opts.show_activity_detail and type(a.detail) == "string" and a.detail ~= "" then
+    detail = a.detail
+  end
+  return icon, hl, detail
+end
+
 local function active_breakdown(s)
   local t = s.totals
   local pairs_str = agent_pairs(s.agents)
@@ -71,7 +102,16 @@ function M.build_segments(selection, opts)
 
   if selection.active then
     local s = selection.active
-    table.insert(segments, { text = icons.active .. " " .. s.name, hl = hl.active_name })
+    local icon, icon_hl, detail = M.activity_parts(s, opts)
+    if icon then
+      table.insert(segments, { text = icon, hl = icon_hl })
+      table.insert(segments, { text = " " .. s.name, hl = hl.active_name })
+    else
+      table.insert(segments, { text = icons.active .. " " .. s.name, hl = hl.active_name })
+    end
+    if detail then
+      table.insert(segments, { text = " " .. detail, hl = hl.dim })
+    end
     table.insert(segments, { text = " (" .. active_breakdown(s) .. ")", hl = hl.dim })
   end
 
@@ -86,6 +126,10 @@ function M.build_segments(selection, opts)
     end
     -- see CLAUDE.md "Only the active session gets agent detail"
     local badge = (s.agents and #s.agents > 0) and (" " .. #s.agents .. "A") or ""
+    local icon, icon_hl = M.activity_parts(s, opts)
+    if icon then
+      table.insert(segments, { text = icon .. " ", hl = icon_hl })
+    end
     table.insert(segments, { text = s.name .. badge .. " " .. M.fmt_cost_short(s.totals.cost_usd), hl = hl.dim })
     grand_total = grand_total + s.totals.cost_usd
   end

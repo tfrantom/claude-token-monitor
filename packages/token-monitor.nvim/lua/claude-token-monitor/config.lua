@@ -20,10 +20,32 @@ M.defaults = {
     separator = " │ ",
     total = "Σ",
   },
+  -- Keyed by the session's activity.state. An unrecognised state falls back to
+  -- `unknown` rather than rendering nothing, so a newer publisher's vocabulary
+  -- still shows up here. Must stay in step with statusline.js's ACTIVITY.
+  activity_icons = {
+    working = "▶",
+    waiting_agents = "⋯",
+    waiting_user = "?",
+    done = "✓",
+    blocked = "!",
+    idle = "·",
+    ended = "·",
+    unknown = "•",
+  },
+  -- Set false to render names and costs only, with no activity marker.
+  show_activity = true,
+  -- Set false to drop the free-text detail a session publishes alongside its
+  -- state, which can be long.
+  show_activity_detail = true,
   highlights = {
     active_name = "ClaudeTokenMonitorActive",
     active_cost = "ClaudeTokenMonitorActiveCost",
     dim = "ClaudeTokenMonitorDim",
+    activity_done = "ClaudeTokenMonitorDone",
+    activity_working = "ClaudeTokenMonitorWorking",
+    activity_waiting = "ClaudeTokenMonitorWaiting",
+    activity_blocked = "ClaudeTokenMonitorBlocked",
   },
 }
 

@@ -30,6 +30,8 @@ module.exports = {
 
   AGENT_ACTIVE_WINDOW_MS: 90 * 1000,
 
+  RECENT_WRITES_WINDOW_MS: 10 * 60 * 1000,
+
   SEMANTIC_CLASSIFICATION_ENABLED: true,
   SEMANTIC_TIME_BUDGET_MS: 8000,
   SEMANTIC_RETRY_MS: 60 * 1000,
@@ -37,4 +39,18 @@ module.exports = {
   RENAME_MIN_INTERVAL_MS: 15 * 1000,
   RENAME_MIN_NEW_CHARS: 20,
   RENAME_RECENT_MESSAGES: 3,
+
+  // Machine-level, not STATE_DIR: publishers are other sessions, installed
+  // skill copies and separate repos, none of which can resolve a path into
+  // this checkout. Same reasoning as llama-local-server's runtime dir.
+  SIGNAL_DIR: process.env.TOKEN_MONITOR_SIGNAL_DIR || path.join(HOME, '.claude', 'token-monitor', 'signals'),
+  SIGNAL_TTL_MS: Number(process.env.TOKEN_MONITOR_SIGNAL_TTL_MS ?? 60 * 60 * 1000),
+  SIGNAL_SUPERSEDE_MS: Number(process.env.TOKEN_MONITOR_SIGNAL_SUPERSEDE_MS ?? 90 * 1000),
+
+  // How recently a transcript must have been written for a session that has
+  // published nothing to read as `working`. A heuristic, and the reason it is
+  // not tighter: a long thinking block writes nothing for a while, so a short
+  // window would flicker a busy session to idle. Hooks supersede this with the
+  // real answer.
+  ACTIVITY_ACTIVE_WINDOW_MS: Number(process.env.TOKEN_MONITOR_ACTIVITY_WINDOW_MS ?? 45 * 1000),
 };

@@ -30,15 +30,39 @@ local function define_highlights(hl)
   vim.api.nvim_set_hl(0, hl.active_name, { link = "Title", default = true })
   vim.api.nvim_set_hl(0, hl.active_cost, { link = "Number", default = true })
   vim.api.nvim_set_hl(0, hl.dim, { link = "Comment", default = true })
+  vim.api.nvim_set_hl(0, hl.activity_done, { link = "DiagnosticOk", default = true })
+  vim.api.nvim_set_hl(0, hl.activity_working, { link = "DiagnosticInfo", default = true })
+  vim.api.nvim_set_hl(0, hl.activity_waiting, { link = "DiagnosticWarn", default = true })
+  vim.api.nvim_set_hl(0, hl.activity_blocked, { link = "DiagnosticError", default = true })
 end
 
+-- A formatter error must not blank the bar. refresh() runs on a timer via
+-- vim.schedule, so an uncaught error there surfaces as a callback traceback on
+-- every tick and leaves the cache holding nothing -- which reads as "the plugin
+-- is dead" rather than "one field was the wrong shape". status.json is written
+-- by a separate process that gains keys independently of this plugin, so the
+-- shape is not something this side gets to assume.
 function M.refresh()
   local opts = config.options
   local status = reader.read_status(opts.status_file)
   local selection = reader.select_sessions(status, opts)
   cache.selection = selection
-  cache.statusline = format.statusline_string(selection, opts)
-  cache.plain = format.plain_string(selection, opts)
+
+  local ok, err = pcall(function()
+    cache.statusline = format.statusline_string(selection, opts)
+    cache.plain = format.plain_string(selection, opts)
+  end)
+  if not ok then
+    local msg = "token-monitor: render failed"
+    cache.statusline = "%#" .. opts.highlights.dim .. "#" .. msg .. "%*"
+    cache.plain = msg
+    if not cache.reported_error then
+      cache.reported_error = true
+      vim.notify(msg .. ": " .. tostring(err), vim.log.levels.WARN)
+    end
+  else
+    cache.reported_error = false
+  end
 end
 
 function M.get_statusline()

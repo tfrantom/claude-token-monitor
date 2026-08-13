@@ -11,6 +11,7 @@ idea. Each has its own `README.md` for how to run and configure it, and its own
 | [`ask-question-prefilter`](ask-question-prefilter/) | A local-model gate in front of `bug-me-claude`'s `ask-question.ps1` |
 | [`usage-history-rollups`](usage-history-rollups/) | Persists cost/usage history, which `status.json` alone cannot answer |
 | [`per-project-cost-attribution`](per-project-cost-attribution/) | Attributes cost by real repo/directory rather than Claude Code's coarse per-terminal grouping |
+| [`comment-auditor`](comment-auditor/) | Reports code comments that the repo's conventions say should not exist, using rules plus the local model |
 
 `local-inference-skill` and `ask-question-prefilter` are installed or wired by
 `install.ps1`; `cost-anomaly-alerts` and `usage-history-rollups` are daemons you

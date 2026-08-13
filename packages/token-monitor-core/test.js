@@ -13,6 +13,10 @@ const path = require('path');
 // write lock and stamp files, which would otherwise fight the live watcher.
 const stateTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tmc-core-state-'));
 process.env.TOKEN_MONITOR_STATE_DIR = stateTmp;
+const signalTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tmc-core-signals-'));
+process.env.TOKEN_MONITOR_SIGNAL_DIR = signalTmp;
+
+const cfg = require('./config');
 
 const { costForTurn, priceFor, rateFor } = require('./lib/pricing');
 const { classifySession } = require('./lib/transcript');
@@ -309,7 +313,6 @@ check('joinRecent pulls older context in only up to the minimum', () => {
 // when it fails.
 
 const supervisor = require('./lib/supervisor');
-const cfg = require('./config');
 
 function resetSupervisorState() {
   fs.mkdirSync(cfg.STATE_DIR, { recursive: true });
@@ -382,8 +385,123 @@ check('the failed state names the command that explains why', () => {
   assert.match(watcherMessage('failed'), /watcher\.js/);
 });
 
+// ------------------------------------------------------ activity signals --
+
+const signals = require('./lib/signals');
+const { buildActivity } = require('./watcher');
+const { activityMark, ACTIVITY } = require('./statusline');
+
+const MIN = 60 * 1000;
+
+check('a published signal round-trips, session and agent separately', () => {
+  signals.publish({ sessionId: 'sess-a', state: 'working', detail: 'running tests' });
+  signals.publish({ sessionId: 'sess-a', agent: 'finder', state: 'done' });
+  const all = signals.bySession();
+  assert.strictEqual(all['sess-a'].state, 'working');
+  assert.strictEqual(all['sess-a'].detail, 'running tests');
+  assert.deepStrictEqual(
+    all['sess-a'].agents.map((a) => [a.agent, a.state]),
+    [['finder', 'done']]
+  );
+  signals.clear('sess-a');
+  signals.clear('sess-a', 'finder');
+});
+
+check('an unknown state is refused at publish time', () => {
+  assert.throws(() => signals.publish({ sessionId: 'x', state: 'nonsense' }), /unknown state/);
+});
+
+check('a claim name cannot escape the signal directory', () => {
+  assert.throws(() => signals.fileFor('../../evil'), /unsafe session id/);
+  assert.throws(() => signals.fileFor('ok', '../x'), /unsafe agent id/);
+});
+
+check('a signal past its TTL is not reported', () => {
+  const old = new Date(Date.now() - cfg.SIGNAL_TTL_MS - MIN).toISOString();
+  signals.publish({ sessionId: 'sess-old', state: 'done', at: old });
+  assert.ok(!signals.bySession()['sess-old'], 'expected the stale signal to be dropped');
+  signals.clear('sess-old');
+});
+
+check('prune drops signals for sessions the watcher no longer reports', () => {
+  signals.publish({ sessionId: 'sess-keep', state: 'working' });
+  signals.publish({ sessionId: 'sess-gone', state: 'working' });
+  signals.prune(['sess-keep']);
+  const all = signals.bySession();
+  assert.ok(all['sess-keep'], 'live session should survive prune');
+  assert.ok(!all['sess-gone'], 'orphaned session should be pruned');
+  signals.clear('sess-keep');
+});
+
+check('an explicit signal wins over what the watcher would infer', () => {
+  const a = buildActivity({ state: 'working', detail: 'busy', at: new Date().toISOString() }, [{}, {}], false, Date.now());
+  assert.strictEqual(a.state, 'working');
+  assert.strictEqual(a.source, 'signal');
+});
+
+check('running agents are inferred when nothing was published', () => {
+  const a = buildActivity(undefined, [{}, {}], false, Date.now());
+  assert.strictEqual(a.state, 'waiting_agents');
+  assert.strictEqual(a.source, 'inferred');
+  assert.match(a.detail, /2 agents/);
+});
+
+check('a session writing its transcript right now reads as working', () => {
+  // The common case: another session that has never published anything must
+  // still show as busy, or the bar says nothing about most of the machine.
+  const a = buildActivity(undefined, [], false, Date.now() - 5000);
+  assert.strictEqual(a.state, 'working');
+  assert.strictEqual(a.source, 'inferred');
+});
+
+check('a session quiet longer than the window shows no activity', () => {
+  const quiet = Date.now() - cfg.ACTIVITY_ACTIVE_WINDOW_MS - 5000;
+  assert.strictEqual(buildActivity(undefined, [], false, quiet).state, null);
+});
+
+check('agents outrank plain writing when inferring', () => {
+  assert.strictEqual(buildActivity(undefined, [{}], false, Date.now()).state, 'waiting_agents');
+});
+
+check('a signal is superseded once the transcript keeps growing past it', () => {
+  // Publishing writes a tool call to the transcript, so the transcript is
+  // always a beat newer than the signal; only a wide gap means "back at work".
+  const at = new Date(Date.now() - 10 * MIN).toISOString();
+  const justAfter = buildActivity({ state: 'done', at }, [], false, Date.parse(at) + 2000);
+  assert.strictEqual(justAfter.state, 'done', 'a couple of seconds later is still done');
+
+  const longAfter = buildActivity({ state: 'done', at }, [], false, Date.parse(at) + 5 * MIN);
+  assert.strictEqual(longAfter.state, null, 'five minutes of further writing supersedes it');
+});
+
+check('an ended session reports ended, whatever it last published', () => {
+  const a = buildActivity({ state: 'working', at: new Date().toISOString() }, [], true, Date.now());
+  assert.strictEqual(a.state, 'ended');
+});
+
+check('every published state has a status line glyph', () => {
+  for (const s of signals.STATES) {
+    assert.ok(ACTIVITY[s], `no glyph for published state '${s}'`);
+  }
+});
+
+check('an unrecognised state still renders, rather than vanishing', () => {
+  const mark = activityMark({ state: 'deploying' });
+  assert.ok(mark && mark.glyph, 'a future publisher state must not render as nothing');
+  assert.strictEqual(activityMark({ state: null }), null);
+  assert.strictEqual(activityMark(null), null);
+});
+
+check('activity glyphs are distinguishable from each other', () => {
+  const glyphs = Object.entries(ACTIVITY)
+    .filter(([k]) => k !== 'idle' && k !== 'ended')
+    .map(([, v]) => v.glyph);
+  assert.strictEqual(new Set(glyphs).size, glyphs.length, `glyphs collide: ${glyphs.join(' ')}`);
+});
+
 fs.rmSync(tmp, { recursive: true, force: true });
 fs.rmSync(stateTmp, { recursive: true, force: true });
+fs.rmSync(signalTmp, { recursive: true, force: true });
 
 const total = passed + failures.length;
 if (failures.length) {

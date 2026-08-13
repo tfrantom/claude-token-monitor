@@ -59,6 +59,9 @@ Passed as `opts`; defaults live in `lua/claude-token-monitor/config.lua`.
 | `stale_after_ms` | `600000` | Sessions not written within this are hidden |
 | `max_other_sessions` | `3` | Non-active sessions listed |
 | `icons` | `{ active = "●", separator = " │ ", total = "Σ" }` | |
+| `show_activity` | `true` | Render each session's declared state (`✓ done`, `▶ working`, …) |
+| `show_activity_detail` | `true` | Also render the free text a session publishes with its state |
+| `activity_icons` | see `config.lua` | Per-state glyphs; unknown states fall back to `unknown` |
 | `highlights` | the group names below | Point them at your own groups instead |
 
 | Highlight group | Default link | Used for |
@@ -66,6 +69,10 @@ Passed as `opts`; defaults live in `lua/claude-token-monitor/config.lua`.
 | `ClaudeTokenMonitorActive` | `Title` | Active session's name |
 | `ClaudeTokenMonitorActiveCost` | `Number` | Active session's cost |
 | `ClaudeTokenMonitorDim` | `Comment` | Everything else |
+| `ClaudeTokenMonitorDone` | `DiagnosticOk` | `done` |
+| `ClaudeTokenMonitorWorking` | `DiagnosticInfo` | `working` |
+| `ClaudeTokenMonitorWaiting` | `DiagnosticWarn` | `waiting_user`, `waiting_agents` |
+| `ClaudeTokenMonitorBlocked` | `DiagnosticError` | `blocked` |
 
 Linked with `default = true`, so `vim.api.nvim_set_hl(0, "ClaudeTokenMonitorActive", { fg = "#..." })`
 wins.

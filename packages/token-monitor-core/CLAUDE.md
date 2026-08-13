@@ -16,7 +16,7 @@ node test-lifecycle.js --take-over   # end-to-end; takes over port 8090
 |---|---|
 | `watcher.js` | The daemon. Polls `~/.claude/projects/**/*.jsonl` every 5s for recently-modified transcripts, classifies each one plus its subagent sidechains, names sessions, writes `state/status.json`. Holds a PID lock; exactly one may run. |
 | `statusline.js` | What Claude Code invokes on every render. Reads `state/status.json` and formats it; starts the watcher if none is running. Does no parsing and makes no LLM calls. |
-| `lib/transcript.js` | Parses one session `.jsonl` into per-turn totals, per-block classifiable text, user turns, and `Agent` spawns. |
+| `lib/transcript.js` | Parses one session `.jsonl` into per-turn totals, per-block classifiable text, user turns, `Agent` spawns, and file-mutating tool calls (`fileWrites`). |
 | `lib/pricing.js` | Per-model $/MTok rate card and the cost math, including fast-mode premiums and dated intro windows. |
 | `lib/llm-client.js` | Hand-rolled client (no SDK) for `llama-local-server`'s OpenAI-compatible endpoint. `nameSession` names a block of text. |
 | `lib/semantic-classifier.js` | Tags each turn's `tool_use` blocks with a purpose and each thinking block with a quality verdict, via JSON-schema structured output, one batched request per turn. |
@@ -141,6 +141,25 @@ Rewritten atomically every tick. Consumers should tolerate unknown keys.
           "tokens": 84210, "cost_usd": 1.87 }
       ],
 
+      // Newest write per path within RECENT_WRITES_WINDOW_MS, newest first.
+      // The path is whatever the tool was handed, so it may be relative.
+      "recent_writes": [
+        { "path": "C:\\projects\\x\\a.js", "at": "2026-08-12T09:30:58.220Z" }
+      ],
+
+      // What the session says it is doing. `state` is null when nothing was
+      // published and nothing could be inferred. Always present.
+      "activity": {
+        "state":  "working",          // see "Activity signals" below
+        "detail": "running the tests", // free text from the publisher, or null
+        "at":     "2026-08-12T09:30:40.100Z",
+        "source": "cli",              // cli | hook | inferred | watcher
+        "agents": [
+          { "agent": "bugfinder", "state": "working", "detail": null,
+            "at": "2026-08-12T09:30:41.000Z" }
+        ]
+      },
+
       // Omitted entirely when SEMANTIC_CLASSIFICATION_ENABLED is false.
       // Sub-splits the prorated thinking/tool_calls figures; never a competing total.
       "semantic": {
@@ -162,6 +181,72 @@ Two shapes are deliberate and consumers rely on them: `agents` is an empty array
 rather than absent, so nothing needs a presence check; and `semantic` is absent
 rather than zeroed when classification is off, which is exactly the
 pre-semantic-layer shape both status bars already render.
+
+`recent_writes` answers "is a session editing this file right now?" for
+`projects/comment-auditor`'s write gate, and subagent writes are folded into the
+parent — a subagent editing a file is the same race as the parent doing it. It
+is newest-per-path rather than a history: an unbounded log answers that question
+no better. A consumer that finds the key absent is talking to an older watcher
+and must degrade rather than assume the file is idle.
+
+## Activity signals
+
+Everything else in `status.json` is *observed* — parsed out of a transcript
+after the fact. `activity` is the one thing a session **declares**, so it can
+say things the transcript cannot: that it is finished, that it is blocked, that
+it is waiting on a human.
+
+A publisher writes one small JSON file and stops caring:
+
+```sh
+node signal.js working "running the test suite"
+node signal.js done
+node signal.js --agent bugfinder waiting_user "needs a decision"
+```
+
+States are a closed set — `working`, `waiting_user`, `waiting_agents`, `done`,
+`blocked`, `idle` — validated at publish time so a typo fails at the publisher
+instead of rendering as a blank on every bar. **Readers must tolerate a state
+they do not know**: both bars fall back to a neutral glyph, so an older bar
+keeps working against a newer publisher. Do not make either side strict.
+
+### Where signals live, and why not in `state/`
+
+`~/.claude/token-monitor/signals/`, machine-level, same reasoning as
+`llama-local-server`'s runtime dir: the publishers are *other sessions*,
+installed skill copies and separate repos, none of which can resolve a path
+into this checkout.
+
+**One file per publisher**, never one per session — `<session>.json` and
+`<session>.agent-<name>.json`. A session and each of its subagents publish
+concurrently, and a shared file would need a lock for no benefit. Session ids
+and agent names are pattern-checked before they reach the filesystem.
+
+The publisher identifies itself from `CLAUDE_CODE_SESSION_ID`, which Claude
+Code sets on every tool call and which is also the transcript filename and the
+`status.json` key. No configuration, no lookup.
+
+### Staleness is the hard part
+
+A declaration outlives the moment it described, and a wrong "done" is worse
+than no status at all. Three things bound it:
+
+- **TTL** (`SIGNAL_TTL_MS`, 1h) — anything older is not reported.
+- **Prune** — the watcher deletes signals for sessions it no longer reports,
+  reusing the liveness logic it already has.
+- **Supersede** (`SIGNAL_SUPERSEDE_MS`, 90s) — if the transcript kept growing
+  well past the signal, the session evidently went back to work and the signal
+  is dropped in favour of inference.
+
+That last one needs the margin. Publishing *is* a tool call, so the transcript
+is always a second or two newer than the signal it describes; only a wide gap
+means anything. Ninety seconds is comfortably past that and short enough that a
+stale `done` does not sit on the bar for long.
+
+**Inference is the floor.** With nothing published, running subagents render as
+`waiting_agents`, so the feature is useful before anyone signals anything. An
+explicit signal always wins over inference; an ended session always reports
+`ended` regardless of what it last said.
 
 `unpriced_output_tokens` and `fast_unpriced_output_tokens` are surfaced rather
 than swallowed — they are the only warning that a turn's cost is $0 or a floor.

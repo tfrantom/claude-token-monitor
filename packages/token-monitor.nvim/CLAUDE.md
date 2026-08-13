@@ -101,6 +101,18 @@ literal colours: the user's colorscheme stays in charge of the palette.
 cached string. The timer is the sole thing that touches disk. Never add a read,
 a `vim.fn`, or a JSON decode to that path.
 
+## Activity states must render, even unknown ones
+
+`activity.state` is declared by a session, not derived here, so this plugin can
+be older than the publisher that wrote it. `activity_parts()` falls back to the
+`unknown` glyph rather than rendering nothing — a state this plugin has never
+heard of still shows up as *something*. Do not turn that into a whitelist.
+
+The glyph carries the meaning and the highlight only reinforces it: the bar is
+read at a glance, and `DiagnosticOk`/`DiagnosticWarn` are not distinguishable
+in every colourscheme. Keep the state vocabulary and glyphs in step with
+`statusline.js`'s `ACTIVITY` table.
+
 ## Formatting mirrors statusline.js
 
 `fmt_cost_short` and `fmt_num` must stay byte-identical in output to
