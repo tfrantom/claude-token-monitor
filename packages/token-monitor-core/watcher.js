@@ -219,30 +219,53 @@ function joinRecent(texts) {
   return picked.map((t) => (t.length > perMessage ? t.slice(0, perMessage) : t)).join('\n\n');
 }
 
+// Words that describe the shape of an interaction rather than its subject.
+// Two names sharing only these are not about the same thing -- and because one
+// shared word is enough to suppress a rename, a scaffolding word left in here
+// freezes a session's name permanently. That is not hypothetical: a session
+// that had genuinely moved on to another project kept the name
+// "Neovim Token Monitor Error Explanation" because every replacement the model
+// proposed also contained "explanation".
 const TOPIC_STOPWORDS = new Set([
   'session', 'sessions', 'work', 'working', 'task', 'tasks', 'issue', 'issues',
   'and', 'the', 'a', 'an', 'for', 'with', 'to', 'of', 'in', 'on', 'is', 'it',
   'setup', 'project', 'update', 'updates', 'new', 'demo',
+  'explanation', 'summary', 'request', 'review', 'overview', 'analysis',
+  'investigation', 'discussion', 'question', 'questions', 'help', 'fixing',
+  'fixes', 'debugging', 'testing', 'implementation', 'implementing',
+  'refactor', 'refactoring', 'cleanup', 'changes', 'error', 'errors',
 ]);
 
-function topicWords(name) {
+// The project's own name says nothing inside that project: every session in
+// claude-token-monitor could be called something "token monitor". Derived per
+// session rather than listed, so this works for any repo.
+function projectStopwords(project) {
+  return new Set(
+    String(project || '')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 2)
+  );
+}
+
+function topicWords(name, extra) {
   return new Set(
     String(name || '')
       .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
       .toLowerCase()
       .split(/[^a-z0-9]+/)
-      .filter((w) => w.length > 2 && !TOPIC_STOPWORDS.has(w))
+      .filter((w) => w.length > 2 && !TOPIC_STOPWORDS.has(w) && !(extra && extra.has(w)))
   );
 }
 
-function sameTopic(a, b) {
-  const wa = topicWords(a);
+function sameTopic(a, b, extra) {
+  const wa = topicWords(a, extra);
   if (wa.size === 0) return false;
-  for (const w of topicWords(b)) if (wa.has(w)) return true;
+  for (const w of topicWords(b, extra)) if (wa.has(w)) return true;
   return false;
 }
 
-async function getOrUpdateName(namesCache, sessionId, userTexts) {
+async function getOrUpdateName(namesCache, sessionId, userTexts, project) {
   if (userTexts.length === 0) return null;
 
   let entry = namesCache[sessionId];
@@ -273,7 +296,7 @@ async function getOrUpdateName(namesCache, sessionId, userTexts) {
   const fresh = await nameSession(recent);
 
   namesCache[sessionId] = {
-    name: fresh && !sameTopic(fresh, entry.name) ? fresh : entry.name,
+    name: fresh && !sameTopic(fresh, entry.name, projectStopwords(project)) ? fresh : entry.name,
     named_at_ms: Date.now(),
     named_at_turn_count: userTexts.length,
   };
@@ -357,6 +380,13 @@ function buildActivity(signal, agents, ended, lastActivityMs, now = Date.now()) 
     Number.isFinite(at) && Number.isFinite(lastActivityMs) && lastActivityMs - at > cfg.SIGNAL_SUPERSEDE_MS;
 
   if (signal && signal.state && !superseded) {
+    // `working` is the least specific thing a session can say, and the
+    // UserPromptSubmit hook publishes it for a whole turn -- so running agents
+    // refine it rather than being hidden by it. Every other state (done,
+    // blocked, waiting_user) is more specific than the inference and wins.
+    if (signal.state === 'working' && running) {
+      return { ...inferred, at: signal.at, source: 'inferred', agents: signal.agents || [] };
+    }
     return {
       state: signal.state,
       detail: signal.detail,
@@ -399,7 +429,7 @@ async function tick(namesCache, semanticCache) {
   for (const { f, parsed, ended, agents } of parsedByFile) {
     const name = ended
       ? getCachedName(namesCache, f.sessionId)
-      : await getOrUpdateName(namesCache, f.sessionId, parsed.userTexts);
+      : await getOrUpdateName(namesCache, f.sessionId, parsed.userTexts, f.project);
     const session = {
       session_id: f.sessionId,
       project: f.project,
@@ -549,4 +579,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { sameTopic, topicWords, joinRecent, buildActivity, recentWrites };
+module.exports = { sameTopic, topicWords, projectStopwords, joinRecent, buildActivity, recentWrites };

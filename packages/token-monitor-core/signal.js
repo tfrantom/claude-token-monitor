@@ -10,21 +10,35 @@
 //   node signal.js --agent bugfinder working "scanning packages/"
 //   node signal.js --clear
 //   node signal.js --show
+//   node signal.js --from-hook working      (reads session_id from stdin JSON)
 //
 // Reads CLAUDE_CODE_SESSION_ID, which Claude Code sets for every tool call and
 // which is also the transcript filename and the status.json key. --session
-// overrides it for hooks, which get the id on stdin instead.
+// overrides it, and --from-hook takes it off the hook payload on stdin --
+// parsing it here rather than in the hook command keeps jq and shell quoting
+// out of a cross-platform config file.
 
+const fs = require('fs');
 const signals = require('./lib/signals');
 
+function readHookPayload() {
+  try {
+    const raw = fs.readFileSync(0, 'utf8');
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
 function parseArgs(argv) {
-  const opts = { agent: null, session: null, state: null, detail: null, clear: false, show: false, json: false };
+  const opts = { agent: null, session: null, state: null, detail: null, clear: false, show: false, json: false, fromHook: false };
   const rest = [];
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--agent') opts.agent = argv[++i];
     else if (a === '--session') opts.session = argv[++i];
     else if (a === '--clear') opts.clear = true;
+    else if (a === '--from-hook') opts.fromHook = true;
     else if (a === '--show') opts.show = true;
     else if (a === '--json') opts.json = true;
     else if (a === '-h' || a === '--help') opts.help = true;
@@ -77,7 +91,8 @@ function main() {
     return;
   }
 
-  const sessionId = opts.session || process.env.CLAUDE_CODE_SESSION_ID;
+  const hook = opts.fromHook ? readHookPayload() : {};
+  const sessionId = opts.session || hook.session_id || process.env.CLAUDE_CODE_SESSION_ID;
   if (!sessionId) {
     process.stderr.write(
       'no session id: CLAUDE_CODE_SESSION_ID is unset and --session was not given.\n' +
@@ -106,7 +121,7 @@ function main() {
       state: opts.state,
       detail: opts.detail,
       pid: process.env.CLAUDE_PID || null,
-      source: opts.session ? 'hook' : 'cli',
+      source: opts.fromHook || opts.session ? 'hook' : 'cli',
     });
   } catch (err) {
     process.stderr.write(`${err.message}\n`);

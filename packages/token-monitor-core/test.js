@@ -21,7 +21,7 @@ const cfg = require('./config');
 const { costForTurn, priceFor, rateFor } = require('./lib/pricing');
 const { classifySession } = require('./lib/transcript');
 const { renderLine, fmtK, fmtCostShort } = require('./statusline');
-const { sameTopic, topicWords, joinRecent } = require('./watcher');
+const { sameTopic, topicWords, projectStopwords, joinRecent } = require('./watcher');
 
 let passed = 0;
 const failures = [];
@@ -292,6 +292,39 @@ check('topicWords splits camelCase as well as separators', () => {
   assert.ok(topicWords('debugging-watcher-cache').has('watcher'));
 });
 
+check('a name that narrates the titling job is rejected', () => {
+  // Both failure modes of a 3B handed a message addressed to an assistant:
+  // it answers ("I apologize..."), or it describes the job it was given
+  // ("Labeling Conversational Dialogue Task"). Both reached the status bar.
+  const { cleanName } = require('./lib/llm-client');
+  assert.strictEqual(cleanName('Labeling Conversational Dialogue Task'), null);
+  assert.strictEqual(cleanName('Labeled Transcript Excerpt'), null);
+  assert.strictEqual(cleanName('I Apologize For The Limitation'), null);
+  assert.strictEqual(cleanName('Cow Agent Project Development'), 'Cow Agent Project Development');
+  assert.strictEqual(cleanName('Fixing vim.NIL Bug in Nvim'), 'Fixing vim.NIL Bug in Nvim');
+});
+
+check('a shared scaffolding word does not freeze a name', () => {
+  // The live failure: a session that had moved on to another project kept
+  // "Neovim Token Monitor Error Explanation" because every replacement the
+  // model proposed also happened to contain "explanation".
+  const old = 'Neovim Token Monitor Error Explanation';
+  assert.ok(!sameTopic('Tag-Goto Feature Explanation Summary', old), 'only "explanation" in common');
+  assert.ok(!sameTopic('Cost Attribution Review', 'Pricing Table Review'), 'only "review" in common');
+  assert.ok(sameTopic('Neovim Plugin Debugging', old), 'a real shared subject still blocks');
+});
+
+check("a project's own name carries no signal inside that project", () => {
+  const proj = projectStopwords('C--projects-claude-token-monitor');
+  assert.ok(proj.has('token') && proj.has('monitor') && proj.has('claude'));
+  assert.ok(
+    !sameTopic('Token Monitor Status Bar', 'Token Monitor Error Explanation', proj),
+    'two unrelated names in one repo must not read as the same topic'
+  );
+  // ...but the same words elsewhere are ordinary signal.
+  assert.ok(sameTopic('Token Monitor Status Bar', 'Token Monitor Error Handling'));
+});
+
 check('sameTopic on an empty/unnamed side is not a match', () => {
   assert.ok(!sameTopic('', 'Anything At All'));
   assert.ok(!sameTopic(null, 'Anything At All'));
@@ -434,8 +467,10 @@ check('prune drops signals for sessions the watcher no longer reports', () => {
 });
 
 check('an explicit signal wins over what the watcher would infer', () => {
-  const a = buildActivity({ state: 'working', detail: 'busy', at: new Date().toISOString() }, [{}, {}], false, Date.now());
-  assert.strictEqual(a.state, 'working');
+  // `waiting_user` is something no amount of transcript-watching can deduce;
+  // inference would have said `waiting_agents` here.
+  const a = buildActivity({ state: 'waiting_user', detail: 'needs a decision', at: new Date().toISOString() }, [{}, {}], false, Date.now());
+  assert.strictEqual(a.state, 'waiting_user');
   assert.strictEqual(a.source, 'signal');
 });
 
@@ -461,6 +496,18 @@ check('a session quiet longer than the window shows no activity', () => {
 
 check('agents outrank plain writing when inferring', () => {
   assert.strictEqual(buildActivity(undefined, [{}], false, Date.now()).state, 'waiting_agents');
+});
+
+check('running agents refine a published "working", but nothing else', () => {
+  const now = Date.now();
+  const at = new Date(now).toISOString();
+  // The UserPromptSubmit hook publishes `working` for a whole turn; without
+  // this the agent detail would be hidden for its duration.
+  assert.strictEqual(buildActivity({ state: 'working', at }, [{}], false, now).state, 'waiting_agents');
+  // More specific states are the session's own claim and must survive.
+  for (const s of ['done', 'blocked', 'waiting_user']) {
+    assert.strictEqual(buildActivity({ state: s, at }, [{}], false, now).state, s, `${s} must win`);
+  }
 });
 
 check('a signal is superseded once the transcript keeps growing past it', () => {

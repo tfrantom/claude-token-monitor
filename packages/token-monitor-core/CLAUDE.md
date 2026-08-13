@@ -243,10 +243,41 @@ is always a second or two newer than the signal it describes; only a wide gap
 means anything. Ninety seconds is comfortably past that and short enough that a
 stale `done` does not sit on the bar for long.
 
-**Inference is the floor.** With nothing published, running subagents render as
-`waiting_agents`, so the feature is useful before anyone signals anything. An
-explicit signal always wins over inference; an ended session always reports
-`ended` regardless of what it last said.
+**Inference is the floor.** With nothing published, a session whose transcript
+is being written reads as `working` and running subagents as `waiting_agents`,
+so the feature is useful before anyone signals anything.
+
+An explicit signal wins over inference, with one deliberate exception:
+**running agents refine a published `working`.** `working` is the least
+specific thing a session can say and the `UserPromptSubmit` hook publishes it
+for a whole turn, so without that rule the agent detail would be hidden for the
+turn's duration. Every other state — `done`, `blocked`, `waiting_user` — is
+something no amount of transcript-watching could deduce, so it wins outright.
+An ended session always reports `ended`.
+
+### Hooks publish the states inference cannot reach
+
+`~/.claude/settings.json` wires four events to `signal.js --from-hook`, which
+reads `session_id` off the hook payload on stdin. Parsing it there rather than
+in the hook command keeps `jq` and shell quoting out of a config file that has
+to work on Windows.
+
+| Event | Publishes |
+|---|---|
+| `UserPromptSubmit` | `working` |
+| `Stop` | `done` |
+| `Notification` | `waiting_user` |
+| `SessionEnd` | clears the signal |
+
+The first three are `async: true` — a status write must never add latency to a
+turn. `SessionEnd` is synchronous because an async hook can be killed as the
+process exits, and a signal that outlives its session is the stale-status
+problem this design spends three mechanisms avoiding.
+
+There is no `SubagentStop` hook. The payload carries no agent identity to
+attribute a per-agent state to, and the watcher already counts running agents
+from their transcripts. A subagent that wants to publish for itself can:
+`signal.js --agent <name> <state>`.
 
 `unpriced_output_tokens` and `fast_unpriced_output_tokens` are surfaced rather
 than swallowed — they are the only warning that a turn's cost is $0 or a floor.
