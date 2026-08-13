@@ -1,7 +1,5 @@
 local M = {}
 
--- Drops a trailing ".0" -- on a space-constrained line "150M" beats "150.0M",
--- and one decimal is only meaningful below ~10 of a unit anyway.
 local function scale(v, suffix)
   if v >= 10 then
     return string.format("%d%s", math.floor(v + 0.5), suffix)
@@ -19,7 +17,7 @@ function M.fmt_num(n)
   return tostring(math.floor(n + 0.5))
 end
 
--- Cost without trailing cents noise; matches statusline.js's fmtCostShort.
+-- Must match statusline.js's fmtCostShort.
 function M.fmt_cost_short(n)
   n = n or 0
   if n >= 10 then
@@ -36,10 +34,8 @@ local function total_tokens(t)
   return (t.context or 0) + (t.cache_write or 0) + (t.cache_read or 0) + (t.thinking or 0) + (t.writing or 0) + (t.tool_calls or 0)
 end
 
--- Semantic layer only ever annotates the thinking bucket's existing total
--- (see token-classifier-demo/PLAN.md §4), so with no classified turns yet
--- (cold start, or llama-server unreachable) this falls back to the plain
--- number instead of showing a misleading 0%.
+-- No classified turns yet (cold start, llama-server unreachable) must render
+-- as a plain number, not 0%.
 local function fmt_thinking(thinking, sem)
   local classified = sem and ((sem.thinking_productive or 0) + (sem.thinking_wasted or 0)) or 0
   if classified < 1 then
@@ -49,8 +45,7 @@ local function fmt_thinking(thinking, sem)
   return string.format("thk %s (%d%%p)", M.fmt_num(thinking), pct)
 end
 
--- Per-agent pairs, "<tokens>-<cost>", in the order the Claude Code UI shows
--- them. Only the active session gets these -- see build_segments.
+-- "<tokens>-<cost>" per agent, in the order the Claude Code UI shows them.
 local function agent_pairs(agents)
   if not agents or #agents == 0 then
     return nil
@@ -72,9 +67,8 @@ local function active_breakdown(s)
   return tail
 end
 
---- Builds an ordered list of {text, hl} segments -- the highlight-agnostic
---- shape both the native-statusline renderer and the lualine component
---- flatten differently, so the layout logic lives here once.
+--- Ordered {text, hl} segments -- the shared shape the native-statusline
+--- renderer and the lualine component each flatten differently.
 function M.build_segments(selection, opts)
   local icons = opts.icons
   local hl = opts.highlights
@@ -95,9 +89,8 @@ function M.build_segments(selection, opts)
     if #segments > 0 then
       table.insert(segments, { text = icons.separator, hl = hl.dim })
     end
-    -- Non-active sessions collapse to a count badge ("3A") instead of listing
-    -- their agents: detail belongs where you're looking, and N tabs each
-    -- rendering N agent lists would make the line unusable.
+    -- Count badge ("3A") rather than the agent list -- see CLAUDE.md
+    -- "Only the active session gets agent detail".
     local badge = (s.agents and #s.agents > 0) and (" " .. #s.agents .. "A") or ""
     table.insert(segments, { text = s.name .. badge .. " " .. M.fmt_cost_short(s.totals.cost_usd), hl = hl.dim })
     grand_total = grand_total + s.totals.cost_usd
@@ -124,8 +117,8 @@ function M.statusline_string(selection, opts)
   return table.concat(parts)
 end
 
---- For lualine or anywhere else that wants one plain string with no vim
---- statusline escape codes (coloring is per-component there, not inline).
+--- For lualine or anywhere else wanting plain text with no statusline
+--- escape codes.
 function M.plain_string(selection, opts)
   local segments = M.build_segments(selection, opts)
   if #segments == 0 then

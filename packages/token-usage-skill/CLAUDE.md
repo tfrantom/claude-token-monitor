@@ -15,7 +15,8 @@ source in this directory is not what runs. After any edit:
 
 This is the single most common wasted debugging loop in the suite — changing
 `SKILL.md` or `lookup.js`, seeing no effect, and concluding something deeper is
-broken.
+broken. It has cost a live re-path once already: the installed copy kept the
+old path while the source here looked correct.
 
 Newly installed skills also only appear in the available-skills listing at the
 *next* session start.
@@ -32,6 +33,26 @@ not hardcoded. If the suite moves, re-run the installer.
 
 **Do not add a `require('../../token-monitor-core/...')` here.** It will work
 in the repo and break the moment it is installed.
+
+Reading `status.json` **by path, with no code dependency on
+`token-monitor-core`**, is the whole point — it is what keeps this package
+extractable on its own. `token-monitor.nvim` consumes the file the same way.
+Keep it that way.
+
+## The numbers come from status.json, not from here
+
+`lookup.js` renders whatever the watcher wrote, so what the skill reports
+changes when `token-monitor-core` changes, with no edit here.
+
+Worth knowing when a reported figure looks wrong: **a session's totals include
+the spend of subagents it launched** (Task tool, separate sidechain
+transcripts). That was missing before 2026-08-06 and is worth roughly 18%, so
+a total reported now can legitimately exceed one quoted earlier in the same
+session's history, or any number cached before then. It is a step change, not
+a regression.
+
+Sessions also carry an `agents` array of currently-running agents. `lookup.js`
+does not render it; `--json` passes it through.
 
 ## Encoding
 

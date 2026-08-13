@@ -1,27 +1,10 @@
 'use strict';
 
-// Starts the watcher on demand, from the status line.
+// Starts the watcher on demand, from the status line. Never starts a
+// llama-server -- that is the watcher's job.
 //
-// The suite used to require `node watcher.js` to be run by hand, in a terminal
-// you then had to leave open; the installer printed the command and that was
-// the whole story. Nothing in a fresh install worked until you did that, and
-// nothing cleaned up after the last session closed.
-//
-// The status line is the right place to fix that from, because it is the one
-// piece of this suite that Claude Code itself guarantees to run: it is invoked
-// on every render of every session, which makes it a free liveness signal.
-// So: the status line ensures the watcher, and the watcher ensures the
-// llama-server (see llama-local-server/managed.js). One chain, each link
-// owning exactly the thing below it. Nothing ever starts a llama-server from
-// here -- doing that in a process that lives ~100ms is how you get four of
-// them.
-//
-// The hard constraint is cost. Claude Code re-invokes statusline.js roughly
-// ten times a second (measured: ~102ms median) per open session, so the happy
-// path -- watcher already running -- must be effectively free. It is: one
-// readFileSync of a small file and one signal-0 probe, both microseconds, no
-// network and no spawn. Everything expensive is behind "the watcher is
-// actually missing", which is rare by construction.
+// Runs ~10x/second per open session, so the already-running path must stay two
+// syscalls. See CLAUDE.md "The status line starts the watcher".
 
 const fs = require('fs');
 const path = require('path');
@@ -32,18 +15,10 @@ const LOCK_FILE = path.join(cfg.STATE_DIR, 'watcher.lock');
 const STAMP_FILE = path.join(cfg.STATE_DIR, 'watcher-spawn.json');
 const WATCHER_JS = path.join(__dirname, '..', 'watcher.js');
 
-// A pause button that works from outside the process. TOKEN_MONITOR_NO_AUTOSTART
-// cannot be used for this: Claude Code spawns the status line itself, with its
-// own environment, so there is nowhere for a user to set that variable and
-// have it apply. Creating this file stops autostart until it is deleted --
-// which is how you run a watcher by hand in a terminal to read its logs, and
-// how test-lifecycle.js gets the shared port to itself.
+// An out-of-process pause button. An env var cannot serve here: Claude Code
+// spawns the status line itself, so there is nowhere for a user to set one.
 const DISABLE_FILE = path.join(cfg.STATE_DIR, 'autostart.disabled');
 
-// After this many consecutive failed starts, stop trying and let the status
-// line say so. A watcher that cannot start is nearly always a broken
-// llama.cpp path, which retrying will not fix -- and an invisible retry loop
-// spawning a doomed node process every 10s is worse than an honest message.
 const MAX_CONSECUTIVE_FAILURES = 3;
 
 function isPidAlive(pid) {
@@ -56,9 +31,7 @@ function isPidAlive(pid) {
   }
 }
 
-// The watcher's own PID lock, read here rather than duplicated: whatever the
-// watcher considers proof that it is running is exactly what should count as
-// proof that it does not need starting.
+// The watcher's own PID lock, not a second source of truth.
 function watcherPid() {
   try {
     const pid = Number(fs.readFileSync(LOCK_FILE, 'utf8').trim());
@@ -85,12 +58,10 @@ function writeStamp(stamp) {
   }
 }
 
-// Detached on purpose, and this is the case the general rule carves out: the
-// watcher must outlive the ~100ms status line render that started it, so
-// unref() alone will not do. A detached child can silently fail to launch on
-// Windows -- no error, no 'error' event -- so this is written to be *verified*
-// rather than trusted: the next render checks the lock file, and the failure
-// counter below is what notices when the child never appeared.
+// Detached because the watcher must outlive the ~100ms render that starts it.
+// A detached child can silently fail to launch on Windows, so this is verified
+// rather than trusted -- the next render checks the lock, and the failure
+// counter notices a child that never appeared.
 function spawnWatcher() {
   const child = spawn(process.execPath, [WATCHER_JS], {
     detached: true,
@@ -99,27 +70,21 @@ function spawnWatcher() {
     cwd: path.dirname(WATCHER_JS),
   });
   child.on('error', () => {
-    /* recorded by the next render finding no lock; never throw into a render */
+    /* never throw into a render; the next one sees no lock */
   });
   child.unref();
   return child.pid || null;
 }
 
-// Returns one of:
-//   'running'   a live watcher holds the lock
-//   'starting'  we just spawned one, or another render did moments ago
-//   'cooldown'  missing, but too soon after the last attempt to retry
-//   'failed'    too many consecutive attempts produced no live watcher
-//   'disabled'  autostart turned off (TOKEN_MONITOR_NO_AUTOSTART=1)
+// -> 'running' | 'starting' | 'cooldown' | 'failed' | 'disabled'
 //
-// Never throws. A status line that crashes prints a stack trace ten times a
-// second, so every failure here degrades to a word instead.
+// Never throws: a status line that crashes prints a stack trace ten times a
+// second, so every failure degrades to a word instead.
 function ensureWatcher() {
   try {
     if (watcherPid()) {
-      // Clear the failure counter only on an observed success, not on any
-      // render: a run of failures should survive until a watcher genuinely
-      // comes up.
+      // Cleared on observed success only, so a run of failures survives
+      // until a watcher genuinely comes up.
       const stamp = readStamp();
       if (stamp.failures) writeStamp({});
       return 'running';
@@ -130,17 +95,12 @@ function ensureWatcher() {
     const stamp = readStamp();
     const since = Date.now() - (stamp.at_ms || 0);
 
-    // A spawn happened recently and no lock exists yet. Model load is not in
-    // this path (the watcher writes its lock before touching llama.cpp), but
-    // node startup plus the lock write is not instant either.
     if (since < cfg.WATCHER_SPAWN_COOLDOWN_MS) {
       return (stamp.failures || 0) >= MAX_CONSECUTIVE_FAILURES ? 'failed' : 'starting';
     }
 
-    // The cooldown has expired with still no lock, so the previous attempt --
-    // if there was one -- did not produce a watcher. Count it before trying
-    // again, so a permanently broken install converges on 'failed' instead of
-    // retrying forever.
+    // Cooldown expired with no lock: the previous attempt failed. Counting it
+    // before retrying is what makes a broken install converge on 'failed'.
     const failures = (stamp.at_ms ? stamp.failures || 0 : 0) + (stamp.at_ms ? 1 : 0);
     if (failures >= MAX_CONSECUTIVE_FAILURES) {
       writeStamp({ at_ms: Date.now(), failures });

@@ -1,7 +1,6 @@
 param(
-    # Defaults to two levels up from this script (projects/local-inference-skill
-    # -> projects -> suite root) -- override if you're installing a copy that
-    # doesn't live at its usual place inside the suite.
+    # Defaults to two levels up from this script. Override when installing a
+    # copy that doesn't sit at its usual place inside the suite.
     [string]$SuiteRoot
 )
 
@@ -43,24 +42,16 @@ foreach ($s in @("classify.js", "extract.js", "summarize.js")) {
 Copy-Item (Join-Path $scriptRoot "scripts\lib\local-client.js") "$libDir\local-client.js" -Force
 Write-Host "  Copied lib\local-client.js -> $libDir\local-client.js"
 
-# The installed copy lives outside the suite, so it has no relative path back
-# to it -- and the llama.cpp exe / GGUF locations aren't suite-relative at all,
-# they're machine-specific. Both get resolved here at install time and written
-# alongside the skill. Values are read out of the suite's own
-# llama-local-server/config.js so this never drifts from what the watcher uses
-# (env vars still win at runtime, same as they do there).
+# The installed copy has no relative path back to the suite, and the llama.cpp
+# exe / GGUF locations are machine-specific anyway. Both are resolved here and
+# written alongside the skill. Env vars still win at runtime.
 $llamaCfgPath = Join-Path $SuiteRoot "packages\llama-local-server\config.js"
 $llamaHost = "127.0.0.1"; $llamaPort = 8090
 $llamaExe = ""; $llamaModel = ""
 
-# Ask config.js what it resolves to, rather than parsing it. This used to
-# scrape the quoted defaults out of the source with four regexes, which worked
-# only for as long as those values stayed string literals -- they are now
-# resolved (an Ollama manifest lookup, a search of the usual build locations),
-# so there is no literal left to scrape and the regexes would silently fall
-# back to stale hardcoded paths. Running the file is also the only way to get
-# the same answer the watcher will get at runtime, which is the entire point of
-# reading it here.
+# Ask config.js what it resolves to rather than parsing it: those values are
+# resolvers now, not string literals, so there is nothing left to scrape --
+# and running the file is the only way to get the answer the watcher will get.
 if (Test-Path $llamaCfgPath) {
     # path.resolve, because require() treats a bare relative path as a module
     # name rather than a file.
@@ -79,8 +70,7 @@ if (Test-Path $llamaCfgPath) {
 }
 
 # Empty rather than wrong: local-client.js does its own discovery when a value
-# is absent from config.json, so writing a known-bad path would be strictly
-# worse than writing nothing.
+# is absent, so a known-bad path is worse than none.
 if (-not $llamaExe -or -not (Test-Path $llamaExe)) {
     Write-Warning "  llama-server.exe not found -- build llama.cpp, or set the LLAMA_SERVER_EXE env var."
     $llamaExe = ""
@@ -97,17 +87,14 @@ $skillConfig = [ordered]@{
     llamaServerExe = $llamaExe
     llamaModelPath = $llamaModel
 }
-# NOT Set-Content -Encoding utf8: PowerShell 5.1 writes a BOM with that, and
-# Node's JSON.parse rejects a leading BOM outright. WriteAllText with an
-# explicit no-BOM UTF8Encoding is the only reliable way to get clean UTF-8 out
-# of 5.1. (local-client.js also strips a BOM defensively, belt-and-braces.)
+# NOT Set-Content -Encoding utf8, which writes a BOM that JSON.parse rejects.
+# See ../CLAUDE.md "PowerShell 5.1 traps".
 [System.IO.File]::WriteAllText("$skillDir\config.json", ($skillConfig | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
 Write-Host "  Wrote config.json -> $skillDir\config.json"
 
-# Idempotent: re-running updates the marked block in place rather than
-# appending a duplicate. Double-quoted here-string so $SuiteRoot interpolates
-# -- the backticks below are escaped (`` ` ``) so they survive as literal
-# markdown instead of being read as PowerShell escape sequences.
+# Re-running updates the marked block in place rather than appending a
+# duplicate. Double-quoted here-string so $SuiteRoot interpolates; the
+# backticks below are escaped so they survive as literal markdown.
 $claudeMdPath = "$claudeDir\CLAUDE.md"
 $startMarker  = "<!-- local-inference-skill:start -->"
 $endMarker    = "<!-- local-inference-skill:end -->"
@@ -125,10 +112,9 @@ prose.
 <!-- local-inference-skill:end -->
 "@
 
-# -Encoding UTF8 is required on the read, not optional: Windows PowerShell
-# 5.1's Get-Content falls back to the system codepage for any file without a
-# BOM, which silently mangles multi-byte characters (em-dashes etc.) on read --
-# and that corruption then gets faithfully written back out.
+# -Encoding UTF8 is mandatory on the read: 5.1 otherwise decodes a BOM-less
+# file as the system codepage and mangles every em-dash, which then gets
+# written straight back out.
 $content = if (Test-Path $claudeMdPath) { Get-Content $claudeMdPath -Raw -Encoding UTF8 } else { "" }
 
 if ($content -match [regex]::Escape($startMarker)) {
@@ -144,11 +130,9 @@ if ($content -match [regex]::Escape($startMarker)) {
     Write-Host "Appended local-inference block to $claudeMdPath"
 }
 
-# Same no-BOM rule as config.json above -- `Set-Content -Encoding utf8` on
-# PowerShell 5.1 prepends a UTF-8 BOM, and this file is ~/.claude/CLAUDE.md,
-# which Claude Code reads on every session start. Writing a BOM here also
-# means the NEXT run's `Get-Content -Raw -Encoding UTF8` round-trips it back
-# out, so the marker never gets cleaned up on its own.
+# Same no-BOM rule as config.json above, and it matters more here: a BOM
+# written into ~/.claude/CLAUDE.md is round-tripped by the next run's read, so
+# it never cleans itself up.
 [System.IO.File]::WriteAllText($claudeMdPath, $content, (New-Object System.Text.UTF8Encoding($false)))
 
 Write-Host ""

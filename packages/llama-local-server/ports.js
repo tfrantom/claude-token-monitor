@@ -1,29 +1,9 @@
 'use strict';
 
 // The port registry for every local llama-server instance this suite runs.
-//
-// Why this exists: three separate projects picked their port by running
-// `netstat`, eyeballing the output, and hoping. One of them nearly grabbed
-// 8099, which already had another session's process on it. A hand-picked
-// port that turns out to be taken fails *at spawn time* -- llama-server.exe
-// can't bind, exits immediately, and the caller then sits through a 30s
-// health poll before reporting "did not become healthy", which says nothing
-// about the actual problem. This module moves that failure forward to a
-// declaration and a pre-flight check, with a message that names the culprit.
-//
-// Three things it does:
-//   1. CLAIMS below is the single declarative place a port is claimed. Two
-//      claims on one port is a require-time throw, not a runtime surprise.
-//   2. portFor('name') -- consumers look their port up by name instead of
-//      hardcoding a number, so moving a port is a one-line edit here.
-//   3. inspect()/assertAvailable() probe the port for real (TCP first, then
-//      llama-server's /props) and report *who* is on it, including the case
-//      that matters most: a llama-server that's up but serving the wrong
-//      model, which ensureRunning() would otherwise happily reuse.
-//
-// Dependency-free and plain CommonJS, like the rest of the suite. Nothing in
-// here requires ./server -- server.js requires *this*, not the other way
-// round.
+// Claims are declarative and validated on require; consumers look their port
+// up by name rather than hardcoding a number. See CLAUDE.md "Ports are
+// hand-claimed, and killing is by PID".
 
 const net = require('net');
 const cfg = require('./config');
@@ -31,9 +11,7 @@ const cfg = require('./config');
 const HOST = cfg.LLAMA_HOST;
 
 // ---------------------------------------------------------------------------
-// The claims. Adding an instance to the suite means adding an entry HERE
-// first, then reading the port back out with portFor(name). Do not hardcode
-// the number in a consumer's config.
+// The claims. Add an entry HERE, then read the port back with portFor(name).
 //
 //   port       the claimed TCP port on HOST
 //   owner      repo-relative path of the code that spawns it
@@ -43,18 +21,10 @@ const HOST = cfg.LLAMA_HOST;
 //   mode       'chat' | 'embedding' -- --embedding is an exclusive server
 //              mode, which is the whole reason there is more than one port.
 //   model      human label only. The authoritative model path stays in the
-//              owner's own config; duplicating a blob digest here would just
-//              rot. Identity checks compare against the path the *caller* is
-//              about to spawn with (see assertAvailable).
+//              owner's own config; identity checks compare against the path
+//              the *caller* is about to spawn with (see assertAvailable).
 //   shared     true = other code is expected to reuse this instance as-is
 //              and must never reconfigure it.
-//
-// There is one claim today. The table is not therefore pointless: the checks
-// below are about what is *live on the machine*, not about how many rows are
-// in here. Other tools -- including companion repos that were once folders in
-// this one -- routinely hold neighbouring ports, which is why suggestPort()
-// probes TCP before suggesting anything and assertAvailable() names an
-// occupant instead of letting a spawn fail to bind.
 // ---------------------------------------------------------------------------
 const CLAIMS = {
   'chat-shared': {
@@ -72,9 +42,8 @@ const CLAIMS = {
 
 };
 
-// Ports we know are in use but that nobody in this suite owns. Never claimed,
-// never suggested. Kept here rather than in a comment so suggestPort() can
-// actually honour them.
+// Ports in use that nobody in this suite owns. Never claimed, never suggested.
+// Data rather than a comment so suggestPort() can honour them.
 const RESERVED = {
   8099:
     'Occupied by a process outside this suite. Observed serving nomic-embed-text ' +
@@ -83,11 +52,8 @@ const RESERVED = {
 };
 
 // ---------------------------------------------------------------------------
-// Static validation -- runs on require, on purpose.
-//
-// "Two consumers claim the same port" is the failure this whole module is for,
-// and the only honest time to report it is the moment the second claim is
-// loaded. A throw here is loud, immediate, and points at the one file to edit.
+// Static validation -- runs on require, on purpose: the only honest time to
+// report a duplicate claim is the moment the second one is loaded.
 // ---------------------------------------------------------------------------
 function validate(claims = CLAIMS, reserved = RESERVED) {
   const seen = new Map();
@@ -111,9 +77,8 @@ function validate(claims = CLAIMS, reserved = RESERVED) {
     seen.set(c.port, name);
   }
 
-  // config.js's LLAMA_PORT is what ensureRunning() actually defaults to. If an
-  // env var has moved it, the 'chat-shared' claim is stale and every lookup
-  // built on it is wrong -- say so rather than let the two drift silently.
+  // config.js's LLAMA_PORT is what ensureRunning() actually defaults to, so an
+  // env var that moves it makes the 'chat-shared' claim stale.
   if (claims['chat-shared'] && claims['chat-shared'].port !== cfg.LLAMA_PORT) {
     throw new Error(
       `port registry: claim 'chat-shared' says ${claims['chat-shared'].port} but ` +
@@ -126,8 +91,8 @@ function validate(claims = CLAIMS, reserved = RESERVED) {
 
 validate();
 
-// Declarative means declarative: a consumer that wants a different port edits
-// this file, it does not reach in and mutate the table at runtime.
+// A consumer that wants a different port edits this file; it does not mutate
+// the table at runtime.
 Object.values(CLAIMS).forEach(Object.freeze);
 Object.freeze(CLAIMS);
 Object.freeze(RESERVED);
@@ -174,8 +139,8 @@ function whoClaims(port) {
 
 // A raw TCP connect, not an HTTP request: something can be bound to a port
 // without answering /health (a non-llama service, or a llama-server still
-// loading a model). That is exactly the case where "is it free?" via HTTP lies
-// and you spawn into a bind failure.
+// loading a model), and that is exactly the case where "is it free?" over HTTP
+// lies and you spawn into a bind failure.
 function isListening(port, { host = HOST, timeoutMs = 400 } = {}) {
   return new Promise((resolve) => {
     const sock = new net.Socket();
@@ -194,9 +159,8 @@ function isListening(port, { host = HOST, timeoutMs = 400 } = {}) {
   });
 }
 
-// Ask a listener to identify itself. llama-server's /props carries the three
-// things worth knowing: which model file it actually opened, its -a alias, and
-// its context size. Returns null for anything that isn't a llama-server.
+// Ask a listener to identify itself. Returns null for anything that is not a
+// llama-server.
 async function identify(port, { host = HOST, timeoutMs = 1500 } = {}) {
   try {
     const res = await fetch(`http://${host}:${port}/props`, {
@@ -216,9 +180,9 @@ async function identify(port, { host = HOST, timeoutMs = 1500 } = {}) {
   }
 }
 
-// llama-server reports whatever path string it was handed: 8090 came up with
-// forward slashes, config.js hands out backslashes from path.join. Compare the
-// files, not the spelling.
+// llama-server echoes back whatever path string it was handed, which may use
+// forward slashes where config.js hands out backslashes. Compare the files,
+// not the spelling.
 function samePath(a, b) {
   if (!a || !b) return false;
   const norm = (p) => p.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
@@ -231,8 +195,8 @@ function samePath(a, b) {
 //   'llama'     a llama-server is up, but no expectation was given to check it
 //               against (reuse is probably fine -- verify the alias/model)
 //   'mismatch'  a llama-server is up serving a DIFFERENT model. The dangerous
-//               one: ensureRunning() would reuse it and you'd silently get
-//               answers from the wrong model.
+//               one: ensureRunning() would reuse it and silently answer from
+//               the wrong model.
 //   'foreign'   something is listening that is not a llama-server. Spawning
 //               here will fail to bind.
 async function inspect(name, { expectModelPath = null, host = HOST } = {}) {
@@ -264,8 +228,8 @@ async function scan(opts = {}) {
         port,
         owner: 'outside this suite',
         reserved: RESERVED[p],
-        // 'reserved' either way: not listening today does not make it claimable,
-        // it just means the squatter is between runs.
+        // 'reserved' either way: not listening today does not make it
+        // claimable, only that the squatter is between runs.
         status: 'reserved',
         listening,
         occupant: listening ? await identify(port) : null,
@@ -275,10 +239,10 @@ async function scan(opts = {}) {
   return [...claimed, ...reserved];
 }
 
-// The pre-flight a spawner should run. Throws with a message that names the
-// occupant instead of letting llama-server fail to bind and time out.
-// Returns { port, host, reuse } -- reuse true means a healthy instance of the
-// right model is already there and you should not spawn.
+// The pre-flight a spawner should run: throws naming the occupant instead of
+// letting llama-server fail to bind and time out. Returns
+// { port, host, reuse } -- reuse true means a healthy instance of the right
+// model is already there and you should not spawn.
 async function assertAvailable(name, { expectModelPath = null, host = HOST } = {}) {
   const state = await inspect(name, { expectModelPath, host });
   const where = `port ${state.port} (claimed by '${state.name}', ${state.owner})`;
@@ -305,8 +269,8 @@ async function assertAvailable(name, { expectModelPath = null, host = HOST } = {
   return { port: state.port, host, reuse: state.status !== 'free', state };
 }
 
-// What the three projects were doing by hand with netstat. Skips claimed
-// ports, reserved ports, and anything actually listening.
+// Skips claimed ports, reserved ports, and anything actually listening --
+// other tools on this machine routinely hold neighbouring ports.
 async function suggestPort({ from = 8090, to = 8130, host = HOST } = {}) {
   for (let port = from; port <= to; port++) {
     if (whoClaims(port) || RESERVED[port]) continue;

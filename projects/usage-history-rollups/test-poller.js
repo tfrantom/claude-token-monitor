@@ -1,11 +1,8 @@
 'use strict';
 
-// Deterministic harness for the poller's snapshot-decision logic. Drives
-// poll() against a scratch status.json fixture, so every transition --
-// including ones that would take 30 real minutes or require closing a real
-// Claude Code window -- is exercised in a second. Points at a temp dir via
-// env, so it never reads or writes either the real history or anything under
-// packages/.
+// Drives poll() against a scratch status.json fixture, so every transition --
+// including ones that would take 30 real minutes -- runs in a second. Points
+// at a temp dir via env, so it never touches the real history.
 //
 // Run: node test-poller.js
 

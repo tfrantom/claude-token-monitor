@@ -1,20 +1,19 @@
 # claude-token-monitor.nvim
 
-Reads the token-monitor watcher's `state/status.json` (same file `statusline.js`
-reads for the terminal) and exposes it as a Neovim statusline/winbar segment or
-a lualine component. Does no parsing, no LLM calls, no disk I/O on every
-redraw — a timer refreshes a cached string every `poll_interval_ms`, and the
-statusline functions just return that cache.
+Reads the token-monitor watcher's `state/status.json` (the same file
+`statusline.js` reads for the terminal) and exposes it as a Neovim
+statusline/winbar segment or a lualine component. No parsing, no LLM calls,
+and no disk I/O on redraw — a timer refreshes a cached string every
+`poll_interval_ms` and the statusline functions return that cache.
 
-This is a standalone plugin (its own `lua/claude-token-monitor/` namespace),
-one package in the [claude-token-monitor suite](../../README.md). **Already
-installed** into the live Neovim config at
-`~/AppData/Local/nvim/lua/plugins/claude-token-monitor.lua` — the spec below
-is for reference/reinstall, not a first-time setup step.
+A standalone plugin with its own `lua/claude-token-monitor/` namespace, one
+package in the [claude-token-monitor suite](../../README.md).
 
 ## Install (lazy.nvim)
 
-Point lazy.nvim at this directory as a local plugin:
+`install.ps1` writes this spec to
+`~/AppData/Local/nvim/lua/plugins/claude-token-monitor.lua` for you. To do it
+by hand, point lazy.nvim at this directory as a local plugin:
 
 ```lua
 {
@@ -49,10 +48,9 @@ require("lualine").setup({
 })
 ```
 
-Note: lualine components render as a single color, so the active/dim
-distinction the native-statusline path gets from `%#Group#...%*` codes is
-flattened to plain text here. Use the native statusline/winbar path if you
-want the active session visually distinct.
+lualine components render as a single color, so the active/dim distinction the
+native path gets from `%#Group#...%*` codes is flattened here. Use the native
+statusline/winbar path if you want the active session visually distinct.
 
 **Commands:**
 
@@ -68,22 +66,15 @@ want the active session visually distinct.
 
 ## What it renders
 
-One segment per live session, active one first. Two things beyond name and
-cost are worth knowing:
+One segment per live session, active one first. Beyond name and cost:
 
-- **Ended sessions are filtered out here, not upstream.** The watcher
-  deliberately keeps a finished session in `status.json` flagged `ended: true`
-  for the rest of its 30-minute window, because other consumers want the
-  live→ended transition. Every status bar drops them on its own instead, so a
-  closed session leaves the segment immediately. `reader.lua` does this
-  alongside its own staleness check.
+- **Ended sessions are dropped**, so a closed session leaves the line
+  immediately. `reader.lua` filters them alongside its own staleness check.
 - **Running subagents show up.** The active session gets a per-agent
   `<tokens>-<cost>` list in the order the Claude Code UI shows them; every
-  other session collapses to a `3A` count badge. Detail belongs where you're
-  looking — N windows each rendering N agent lists would make the line
-  unusable. This mirrors `statusline.js` exactly. Note the session's own
-  cost already *includes* its subagents' spend, so the agent figures are a
-  breakdown, not an addition.
+  other session collapses to a `3A` count badge. This mirrors `statusline.js`.
+  A session's own cost already *includes* its subagents' spend, so the agent
+  figures are a breakdown, not an addition.
 
 ## How "active session" is picked
 
@@ -113,6 +104,6 @@ your own groups instead.
 
 ## Requires
 
-The watcher (`node ../watcher.js` from the project root) running and writing
-`state/status.json`. This plugin only reads that file — it does not start or
-manage the watcher or the local llama.cpp server itself.
+The watcher (`node packages/token-monitor-core/watcher.js` from the suite
+root) running and writing its `state/status.json`. This plugin only reads that
+file — it never starts or manages the watcher or the llama.cpp server.

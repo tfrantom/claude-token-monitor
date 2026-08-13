@@ -19,16 +19,12 @@ async function isUp(port = cfg.LLAMA_PORT, host = cfg.LLAMA_HOST) {
   }
 }
 
-// Reuses an already-running server on the target port (e.g. one started by a
-// previous run, or by another process on this machine) instead of
-// double-spawning. Returns the child handle only when this call is the one
-// that started it, so callers know whether they own its lifecycle.
+// Starts a server on the target port, or reuses one already there. Returns the
+// child handle only when this call is what started it, so callers know whether
+// they own its lifecycle -- a per-process contract, which is not enough for the
+// shared instance: see CLAUDE.md "For the shared instance, use managed.js".
 //
-// Multi-instance by design: `llama-server.exe`'s --embedding is an exclusive
-// server *mode*, so embeddings need their own process on their own port with
-// a dedicated model. Rather than have each consumer copy this function, pass
-// the differences in. Every option defaults to the shared chat instance, so
-// ensureRunning() with no arguments behaves exactly as it always has.
+// Every option defaults to the shared chat instance:
 //
 //   ensureRunning()                                   // shared chat server, :8090
 //   ensureRunning({ port: 8091, modelPath: EMBED,     // dedicated embedding server
@@ -53,11 +49,9 @@ async function ensureRunning(opts = {}) {
 
   if (await isUp(port, host)) return { owned: false, proc: null, baseUrl: baseUrlFor(port, host) };
 
-  // config.js resolves the model rather than hardcoding a path, so "not
-  // found" is now a real state and it must be reported here, in terms of what
-  // to do about it. Left unchecked it reaches spawn() as `-m null`, which
-  // llama-server rejects by exiting immediately -- surfacing as the health
-  // loop's useless "did not become healthy after 30s".
+  // Unchecked, a null model path reaches spawn() as `-m null`; llama-server
+  // exits immediately and it surfaces as the health loop's useless "did not
+  // become healthy after 30s".
   if (!modelPath) {
     throw new Error(
       `no model found for '${cfg.LLAMA_MODEL}'. Pull it (\`ollama pull ${cfg.LLAMA_MODEL}\`), ` +
@@ -78,12 +72,9 @@ async function ensureRunning(opts = {}) {
 
   const child = spawn(exePath, args, { stdio: 'ignore', detached });
 
-  // A spawn failure (bad exe path being the likeliest) arrives as an 'error'
-  // EVENT, not a thrown exception -- and an unhandled 'error' on a
-  // ChildProcess is a hard crash with a stack trace. Capture it so callers
-  // get a clean message immediately instead of either crashing or sitting
-  // through the full health-check timeout waiting for a process that never
-  // started. Two separate agents hit this independently before it was fixed.
+  // A spawn failure arrives as an 'error' EVENT, not a throw, and an unhandled
+  // one is a hard crash. Capturing it lets the health loop fail in ~0.5s naming
+  // the path. Keep it -- see CLAUDE.md "Spawn failures arrive as an event".
   let spawnError = null;
   child.on('error', (err) => {
     spawnError = err;
@@ -102,17 +93,11 @@ async function ensureRunning(opts = {}) {
   throw new Error(`llama-server on port ${port} did not become healthy within ${timeoutMs}ms`);
 }
 
-// The preferred entry point for anything that is not the shared chat
-// instance. Same as ensureRunning(), except the port comes from the registry
-// (./ports) by name instead of being hardcoded in the caller's config, and
-// the port is checked *before* spawning.
-//
-// That pre-check is the whole point. Without it, a taken port means
-// llama-server.exe fails to bind, exits at once, and the loop above spends
-// 30s to report "did not become healthy" -- true, useless. Worse, if the
-// squatter happens to be some *other* llama-server, isUp() says yes and you
-// silently get answers from the wrong model. assertAvailable() names the
-// occupant and its model instead.
+// The preferred entry point for anything that is not the shared chat instance:
+// the port comes from the registry by name and is checked *before* spawning,
+// which is what turns a taken port into a message naming the occupant instead
+// of a 30s "did not become healthy" -- or, if the squatter is another
+// llama-server, instead of silent answers from the wrong model.
 //
 // Add the claim to ports.js first, then:
 //

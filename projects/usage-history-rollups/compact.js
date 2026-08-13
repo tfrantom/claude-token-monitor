@@ -1,21 +1,14 @@
 'use strict';
 
-// Retention: rollup-then-truncate for history.jsonl.
+// Retention for history.jsonl: for any UTC day older than --keep-days
+// (default 7), keep only the LAST snapshot per session per day. Recent days
+// are untouched. Dry run unless --apply.
 //
-// POLICY: for any UTC day older than --keep-days (default 7), keep only the
-// LAST snapshot per session per day; drop the rest. Recent days are left
-// completely untouched.
-//
-// Why last-per-session-per-day specifically: entries are cumulative, and
-// report.js derives per-period numbers by differencing consecutive snapshots
-// of the same session. Keeping the last snapshot of each day preserves that
-// session's cumulative value at each day boundary exactly, so all daily and
-// coarser totals stay bit-for-bit correct after compaction -- the only thing
-// lost is sub-day resolution on data older than a week, which is precisely
-// the resolution nobody asks for at that age. Dropping the *first* or an
-// arbitrary entry instead would corrupt the differencing.
-//
-// Dry run by default. Pass --apply to actually rewrite the file.
+// Last-per-session-per-day is the specific choice that makes this lossless at
+// daily resolution: entries are cumulative and report.js differences
+// consecutive ones, so keeping each session's value at each day boundary
+// leaves all daily and coarser totals bit-for-bit correct. Keeping the first
+// entry of a day instead would corrupt the differencing.
 //
 //   node compact.js                    # show what would be dropped
 //   node compact.js --apply
@@ -73,9 +66,9 @@ function main() {
     console.log('  nothing to do');
     return;
   }
-  // Write via a temp file + rename so an interrupted compaction can never
-  // leave a truncated history behind. The .bak is kept as a one-generation
-  // undo, since this is the only operation in the project that deletes data.
+  // Temp + rename so an interrupted compaction can't leave a truncated
+  // history behind. The .bak is a one-generation undo -- this is the only
+  // operation in the project that deletes data.
   const tmp = `${cfg.HISTORY_FILE}.tmp`;
   fs.writeFileSync(tmp, result.map((e) => JSON.stringify(e)).join('\n') + '\n');
   fs.copyFileSync(cfg.HISTORY_FILE, `${cfg.HISTORY_FILE}.bak`);

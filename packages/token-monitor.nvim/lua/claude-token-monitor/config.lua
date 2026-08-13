@@ -1,10 +1,7 @@
 local M = {}
 
--- Self-locating rather than hardcoded: token-monitor.nvim and
--- token-monitor-core are fixed siblings under packages/ (they move together
--- as one suite), so the status file's location can be derived from this
--- file's own path instead of baking in an absolute suite root that would
--- break the moment the suite lives somewhere else.
+-- Derived from this file's own path, not hardcoded -- see CLAUDE.md
+-- "It locates itself".
 local function default_status_file()
   local source = debug.getinfo(1, "S").source:sub(2) -- strip leading "@"
   local plugin_dir = source:gsub("[/\\]lua[/\\]claude%-token%-monitor[/\\]config%.lua$", "")
@@ -17,9 +14,8 @@ M.defaults = {
   poll_interval_ms = 5000,
   -- "statusline" (bottom, default) or "winbar" (top, per-window).
   position = "statusline",
-  -- Sessions with no activity for longer than this are dropped from display,
-  -- independent of the watcher's own window -- keeps a stale status.json
-  -- (watcher not running) from showing forever-frozen numbers.
+  -- Display-side only, independent of the watcher's active window -- see
+  -- CLAUDE.md "Staleness is the plugin's own problem".
   stale_after_ms = 10 * 60 * 1000,
   max_other_sessions = 3,
   icons = {

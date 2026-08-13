@@ -12,12 +12,11 @@ Backed by a background watcher (`C:\projects\claude-token-monitor\packages\token
 one package in the claude-token-monitor suite) that classifies every active
 Claude Code session's transcript in real time. Input, cache-read, cache-write,
 and output token counts are exact values straight from the API's own `usage`
-object; cost is computed from current per-model pricing; the
-thinking/writing/tool-calls split is an estimate (prorated by inter-block
-timing) since the API only reports one combined output-token figure per turn
--- the API doesn't expose a per-block split, so this is the best available
-approximation, not exact. See `C:\projects\claude-token-monitor\README.md`
-for the full suite design.
+object, and cost is computed from current per-model pricing. The
+thinking/writing/tool-calls split is an **estimate**, prorated by inter-block
+timing: the API reports one combined output-token figure per turn and exposes
+no per-block split. Report it as an approximation. See
+`C:\projects\claude-token-monitor\README.md` for the full suite design.
 
 **A session's figures include the spend of any subagents it launched** (Task
 tool). Those turns live in separate sidechain transcripts and were missing
@@ -35,9 +34,9 @@ node "%USERPROFILE%\.claude\skills\token-usage\scripts\lookup.js"
 
 (PowerShell: `node "$env:USERPROFILE\.claude\skills\token-usage\scripts\lookup.js"`)
 
-The script auto-detects the current session via the `CLAUDE_CODE_SESSION_ID`
-environment variable, which every Claude Code Bash invocation inherits --
-no argument needed for "how much has *this* session used".
+The script auto-detects the current session via `CLAUDE_CODE_SESSION_ID`,
+which every Claude Code Bash invocation inherits -- no argument needed for
+"how much has *this* session used".
 
 Optional flags:
 - `--session <id>` -- force a specific session instead of auto-detecting

@@ -1,34 +1,15 @@
 'use strict';
 
-// Standalone rollup poller for token-monitor-core's status.json.
+// Standalone rollup poller. Reads token-monitor-core's status.json by path on
+// its own cadence; nothing under packages/ is imported or modified.
 //
-// Deliberately NOT a hook inside packages/token-monitor-core/watcher.js: this
-// process reads status.json by path on its own cadence, the same
-// arms-length way statusline.js and the nvim plugin consume it. Nothing under
-// packages/ is imported or modified.
-//
-// WHEN TO SNAPSHOT -- resolved. The original brief proposed diffing
-// consecutive ticks' session sets to synthesize a "session ended" signal.
-// That is no longer the best available signal: the watcher now publishes
-// `ended: true` per session, derived from cross-checking Claude Code's own
-// ~/.claude/sessions/<pid>.json registry against live PIDs, and deliberately
-// keeps ended sessions in status.json for the rest of the 30-minute window so
-// a consumer like this one can see the transition. That is a true "the user
-// closed this session" edge, not "the transcript went quiet for a while,"
-// and it does not depend on this poller having observed the immediately
-// preceding tick. So:
-//
-//   1. `ended` (primary)   -- session read ended: true on ENDED_CONFIRM_POLLS
-//                             consecutive polls. The real end-of-session
-//                             checkpoint. Written once per session lifetime.
-//   2. `vanished` (fallback) -- session left status.json entirely without ever
-//                             being finalized. Covers the gaps `ended` can't:
-//                             poller was down across the whole 30-min window,
-//                             or the session aged out while the registry was
-//                             unreadable. Uses last-known totals.
-//   3. `periodic` (sampling) -- a still-live session every PERIODIC_SNAPSHOT_MS.
-//                             Gives long sessions a real time-series instead
-//                             of one lump attributed to the day they ended.
+// Three snapshot triggers:
+//   1. `ended`    -- session read ended: true on ENDED_CONFIRM_POLLS
+//                    consecutive polls. Written once per session lifetime.
+//   2. `vanished` -- session left status.json without ever being finalized,
+//                    using last-known totals. Covers the gaps `ended` can't.
+//   3. `periodic` -- a still-live session every PERIODIC_SNAPSHOT_MS, so a
+//                    long session gets a time-series rather than one lump.
 //
 // Run:  node poller.js
 // Fast cadence for testing (never touches packages/):
@@ -77,13 +58,10 @@ function readHistoryLines(file) {
   return entries;
 }
 
-// Reads status.json defensively. The watcher writes it atomically (tmp +
-// rename) so a torn read shouldn't happen, but the file may not exist yet
-// (poller started before the watcher's first tick), or the watcher may be
-// mid-restart, or not running at all. All of those return null and the caller
-// skips the poll entirely. This distinction is load-bearing: "couldn't read
-// status.json" must never be mistaken for "zero sessions are active," which
-// would roll up every live session as vanished.
+// Returns null for anything unreadable, and the caller skips the poll. That
+// distinction is load-bearing: "couldn't read status.json" must never be
+// mistaken for "zero sessions are active", which would roll up every live
+// session as vanished.
 function readStatus() {
   let raw;
   try {
@@ -101,11 +79,9 @@ function readStatus() {
   return parsed;
 }
 
-// One append-only line. Cumulative, NOT a delta: `totals` is the session's
-// lifetime total as of `ts`, exactly the shape lib/transcript.js already
-// produces. Summing every line for a session would multiply-count it --
-// consumers take the latest line per session, or difference consecutive
-// lines to get a per-period delta (see report.js).
+// Cumulative, NOT a delta: `totals` is the session's lifetime total as of
+// `ts`. Summing every line for a session multiply-counts it -- consumers take
+// the latest line, or difference consecutive ones (see report.js).
 function snapshotEntry(reason, sessionId, seen) {
   const s = seen.session;
   return {
@@ -120,22 +96,16 @@ function snapshotEntry(reason, sessionId, seen) {
     last_activity: s.last_activity, // last transcript timestamp, from the watcher
     totals: s.totals,
     semantic: s.semantic || null,
-    // The join point for per-project-cost-attribution. That project adds a
-    // finer repo/cwd dimension alongside the coarse `project` above; when it
-    // lands a breakdown on the session object in status.json, it appears here
-    // automatically with no change to this file and no reprocessing of lines
-    // already written (older lines carry null, which is a valid value for
-    // this field rather than a schema break). Deliberately a nested object
-    // rather than extra top-level keys, so the two dimensions -- time (one
-    // line per snapshot) and project (this field) -- compose instead of
-    // fighting over the same namespace.
+    // Join point for per-project-cost-attribution's finer repo/cwd dimension.
+    // Null until status.json carries such a breakdown; null is a valid value
+    // for the field, so older lines are not a schema break.
     by_project: s.by_project || null,
   };
 }
 
-// Per-session bookkeeping carried across polls and persisted to
-// last-seen.json, so a poller restart doesn't lose the in-flight state or
-// re-append finals for sessions already rolled up.
+// Per-session bookkeeping persisted to last-seen.json, so a poller restart
+// doesn't lose in-flight state or re-append finals for sessions already
+// rolled up.
 function trackNew(session, now) {
   return {
     session: session,
@@ -154,9 +124,8 @@ function poll(state, nowMs) {
   const current = status.sessions;
   const wrote = [];
 
-  // 1. Sessions that left status.json entirely. Only a fallback now: a
-  //    session that ended cleanly was already finalized by the `ended` branch
-  //    below, ~30 minutes before it aged out of the window.
+  // Sessions that left status.json entirely. A fallback only: one that ended
+  // cleanly was finalized below, ~30 minutes before it aged out.
   for (const sessionId of Object.keys(state)) {
     if (current[sessionId]) continue;
     if (!state[sessionId].finalized) {
@@ -175,23 +144,19 @@ function poll(state, nowMs) {
 
     if (session.ended) {
       seen.ended_polls += 1;
-      // Confirmed-ended and not yet written: this is the checkpoint.
       if (!seen.finalized && seen.ended_polls >= cfg.ENDED_CONFIRM_POLLS) {
         appendHistory(snapshotEntry('ended', sessionId, seen));
         wrote.push({ sessionId, reason: 'ended' });
         seen.finalized = true;
         seen.last_snapshot_at = now;
       }
-      // A finalized session just sits in status.json until it ages out. No
-      // periodic sampling for it -- its totals can't change anymore.
+      // No periodic sampling once finalized -- its totals can't change.
       continue;
     }
 
-    // Live. Reset the ended counter (a flicker shouldn't accumulate toward
-    // the confirm threshold) and clear `finalized` -- a session can genuinely
-    // come back via `claude --resume`, which reuses the session id under a
-    // new PID, and its continued cost deserves a second final snapshot when
-    // it ends again.
+    // Live. A flicker must not accumulate toward the confirm threshold, and
+    // `claude --resume` reuses the session id, so its continued cost deserves
+    // a second final snapshot when it ends again.
     seen.ended_polls = 0;
     seen.finalized = false;
 
@@ -207,10 +172,9 @@ function poll(state, nowMs) {
 }
 
 // Rebuilds "already finalized" from history.jsonl when last-seen.json is
-// missing or stale. Without this, deleting last-seen.json while an ended
-// session is still inside its 30-minute window would append a duplicate
-// final for it. A session seen live again clears the flag on the first poll
-// (see above), so this can't wrongly suppress a resumed session's second end.
+// missing, so losing it while an ended session is still inside its 30-minute
+// window doesn't append a duplicate final. A session seen live again clears
+// the flag, so this can't suppress a resumed session's second end.
 function seedFinalizedFromHistory(state) {
   const finalized = new Set();
   for (const e of readHistoryLines(cfg.HISTORY_FILE)) {

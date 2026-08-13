@@ -1,10 +1,7 @@
 'use strict';
 
-// cost-anomaly-alerts: a standalone daemon, deliberately not folded into
-// token-monitor-core/watcher.js. It only ever reads status.json (never the
-// raw transcripts, never anything under packages/) and only ever calls
-// bug-me-claude's notify-done.ps1 -- see the project README for why this is
-// a separate process.
+// A standalone daemon: reads token-monitor-core's status.json by path, calls
+// bug-me-claude's notify-done.ps1, requires nothing under packages/.
 
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -16,10 +13,8 @@ function loadJson(file, fallback) {
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch {
-    // Missing file, truncated/mid-write JSON (e.g. watcher.js's
-    // writeJsonAtomic caught between the tmp-write and the rename), or any
-    // other read error -- all treated the same: skip this tick, the file
-    // will be readable again on the next poll.
+    // Missing, mid-write, or unreadable all mean the same thing here: skip
+    // this tick, the file will be readable again on the next poll.
     return fallback;
   }
 }
@@ -41,16 +36,9 @@ function crossedTier(cost, thresholds) {
   return tier;
 }
 
-// Fire-and-forget by design: notify-done.ps1 blocks its own process until the
-// user dismisses the popup. Nothing here awaits it, so a popup left sitting
-// unread never stalls the poll loop -- the next tick runs on schedule.
-//
-// Deliberately NOT `detached: true`. That was the first attempt and it
-// silently failed to launch the child at all under some parent contexts
-// (child spawned into a new process group, parent exits/continues, no popup
-// and no entry in wt-focus's own debug log). unref() alone already gives the
-// property that actually matters: the daemon isn't held open by a pending
-// popup. A popup dying with the daemon on Ctrl+C is fine -- preferable, even.
+// Fire-and-forget: notify-done.ps1 blocks its own process until the popup is
+// dismissed, so awaiting it would stall the poll loop. Not `detached: true` --
+// see ../CLAUDE.md, it silently fails to launch under some parent contexts.
 function fireNotification(message) {
   const child = spawn(
     'powershell.exe',
@@ -61,40 +49,26 @@ function fireNotification(message) {
   child.unref();
 }
 
-// Session names come from an LLM (watcher.js's nameSession) and land in a
-// `powershell.exe -File ... -Message <text>` argument. `-File` does its own
-// parsing on top of CommandLineToArgvW and an embedded double quote silently
-// truncates the argument there -- a name of `Project Setup` wrapped in quotes
-// arrived as `Cost alert: session Project` and lost the cost entirely. So the
-// message never wraps the name in quotes, and any quote characters inside the
-// name itself are stripped rather than escaped.
+// Session names are LLM-generated and land in a `powershell.exe -File ...
+// -Message <text>` argument, where an embedded double quote silently truncates
+// the rest. Quotes are stripped rather than escaped, and the message never
+// wraps the name in quotes either. See ../CLAUDE.md.
 function safeName(name) {
   const cleaned = String(name || '').replace(/["`]/g, '').trim();
   return cleaned || '(unnamed session)';
 }
 
-// The dedup/re-notify gate. Same shape as watcher.js's shouldCheckForRename:
-// a persisted "already acted on this" record checked every tick, not a mode.
-// Once a session's highest-crossed tier has been notified, only a *higher*
-// tier is worth another notification -- crossing $10 once must not re-fire
-// every 5s for as long as the session stays above $10.
-//
-// Storing the tier (not a boolean, and not a notified-at timestamp) is what
-// makes the three interesting cases fall out for free:
-//   - stays above $10 forever  -> 10 > 10 false, silent for the rest of the session
-//   - later climbs past $25    -> 25 > 10 true, one more alert
-//   - jumps $8 -> $60 in one tick -> crossedTier gives 50, one alert naming the
-//     highest tier actually reached, not three stacked popups
+// The dedup gate. Cost is monotonic, so crossing $10 once must not re-fire
+// every 5s for as long as the session stays above $10: what is persisted is
+// the highest tier already notified, and only a higher one fires again.
 function shouldNotify(tier, notifiedEntry) {
   const prevTier = notifiedEntry ? notifiedEntry.tier : 0;
   return tier > prevTier;
 }
 
-// Entries are never pruned, deliberately. A session drops out of status.json
-// after ACTIVE_SESSION_WINDOW_MS (30min) of inactivity but can come back --
-// evicting its record on disappearance would re-fire every alert it already
-// sent the moment the user resumes it. Each entry is a few dozen bytes, so
-// unbounded-but-tiny beats correct-until-someone-idles.
+// Entries are never pruned. A session drops out of status.json after 30min
+// idle but can come back, and evicting its record would re-fire every alert it
+// already sent the moment the user resumes it.
 function tick(notified, deps = {}) {
   const notify = deps.notify || fireNotification;
   const status = loadJson(cfg.STATUS_FILE, null);
@@ -141,9 +115,8 @@ function main() {
   loop();
 }
 
-// Only start polling when run as a program. Required as a module (test.js)
-// this exposes the pure decision logic instead, so the dedup gate can be
-// exercised without a live status.json or a real popup.
+// Required as a module (test.js), this exposes the pure decision logic without
+// starting the poll loop -- nothing in it can reach notify-done.ps1.
 if (require.main === module) main();
 
 module.exports = { crossedTier, shouldNotify, tick, loadJson, fireNotification, safeName };

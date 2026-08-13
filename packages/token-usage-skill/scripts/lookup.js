@@ -1,15 +1,10 @@
 #!/usr/bin/env node
 'use strict';
 
-// Installed copy for the token-usage skill (~/.claude/skills/token-usage/).
-// Deliberately self-contained -- no requires from the main
-// claude-token-monitor project -- so it keeps working even if that project
-// moves or is mid-edit. Only touches the one file the watcher writes.
-//
-// The suite's location isn't hardcoded here -- it's copied out to
-// ~/.claude/skills/token-usage/, so there's no relative path back to it.
-// install.ps1 writes a sibling config.json with the resolved paths at
-// install time; re-run it if the suite ever moves.
+// Runs from ~/.claude/skills/token-usage/, outside the suite, so it must
+// require() nothing from it and hardcode no suite path -- install.ps1 writes
+// the resolved paths to a sibling config.json. See CLAUDE.md "The installed
+// copy must stay self-contained".
 
 const fs = require('fs');
 const path = require('path');
@@ -17,10 +12,8 @@ const path = require('path');
 function loadConfig() {
   const configPath = path.join(__dirname, '..', 'config.json');
   try {
-    // replace(/^﻿/, '') -- a BOM makes JSON.parse throw, and anything
-    // writing this file from PowerShell 5.1 will emit one unless it goes out
-    // of its way not to. Cheap insurance against a confusing "no config
-    // found" error when the file is plainly right there.
+    // A BOM makes JSON.parse throw outright, and PowerShell 5.1 emits one
+    // unless the writer goes out of its way not to.
     return JSON.parse(fs.readFileSync(configPath, 'utf8').replace(/^﻿/, ''));
   } catch {
     console.log(`No config.json found at ${configPath} -- re-run install.ps1 from the suite's packages/token-usage-skill/ to regenerate it.`);

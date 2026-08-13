@@ -3,24 +3,19 @@
   Local-model gate in front of bug-me-claude's ask-question.ps1.
 
 .DESCRIPTION
-  Judges (via the suite's local llama-server, see ../../../packages/llama-local-server)
-  whether a blocking interrupt is actually worth firing, and optionally tightens an
-  overly verbose $Question before it gets spoken aloud by wt-focus.exe's TTS.
+  Judges (via the suite's local llama-server) whether a blocking interrupt is worth
+  firing, and optionally tightens an overly verbose $Question before wt-focus.exe's TTS
+  speaks it aloud.
 
-  Design choice (see ../README.md "Which design option got built" for the full writeup):
-  this script is a drop-in wrapper, NOT a modification of ask-question.ps1. It calls the
-  real, unmodified ask-question.ps1 when the verdict is "ask" and passes its stdout straight
-  through unchanged -- so the existing "answer comes back as Bash stdout" contract holds
-  exactly as before for the common case. Only the "skip" case is new behavior: no popup is
-  shown, and a SUPPRESSED: sentinel is written to stdout instead, so a Claude session that
-  has been instructed to call this script instead of ask-question.ps1 directly can tell the
-  two outcomes apart.
+  A drop-in wrapper, NOT a modification of ask-question.ps1: on verdict "ask" it calls
+  the real script unmodified and passes its stdout straight through, so the existing
+  "answer comes back as Bash stdout" contract holds. Only "skip" is new behaviour -- no
+  popup, and a SUPPRESSED: sentinel on stdout instead, which a session told to call this
+  script can distinguish. See ../README.md.
 
-  Fails open by design: any problem talking to the local model (server not running, timeout,
-  malformed response) results in verdict=ask with the question/detail unchanged -- i.e.
-  behaves exactly like calling ask-question.ps1 directly. No retry loop; a single fast
-  /health probe plus a single chat-completions call, same try/catch-and-move-on style as
-  packages/llama-local-server/server.js's isUp().
+  Fails open: any problem talking to the local model (not running, timeout, malformed
+  response) gives verdict=ask with the question unchanged, i.e. exactly today's
+  behaviour. No retry loop -- one fast /health probe, one chat-completions call.
 
 .PARAMETER Question
   Same meaning as ask-question.ps1's -Question: one sentence, gets spoken aloud via TTS.
@@ -29,51 +24,42 @@
   Same meaning as ask-question.ps1's -Detail: longer text shown in the popup body.
 
 .PARAMETER Context
-  Optional. Anything already known/decided that the local model should weigh when judging
-  redundancy -- e.g. a short excerpt of relevant recent conversation. Empty by default;
-  without it the model can only judge redundancy against Question/Detail's own content
-  (e.g. Detail already stating the answer), not against anything Claude alone knows.
+  Optional. Anything already known or decided that the model should weigh when judging
+  redundancy. Without it, redundancy can only be judged against Question/Detail's own
+  content, not against anything Claude alone knows.
 
 .PARAMETER NoSuppress
-  Disable the suppression judgment entirely -- the local model is still consulted for
-  question-tightening only, but verdict is always treated as "ask". Use this to adopt only
-  the lower-risk tightening feature per the open design question in the project README.
+  Never skip. The model is still consulted for question-tightening, but the verdict is
+  always treated as "ask".
 
 .PARAMETER NoTighten
-  Disable question-tightening -- Question is passed to ask-question.ps1 verbatim even when
-  the model proposes a shorter phrasing. Suppression judgment still applies unless -NoSuppress
-  is also set.
+  Never tighten. Question is passed through verbatim; suppression still applies unless
+  -NoSuppress is also set.
 
 .PARAMETER DryRun
-  Don't call ask-question.ps1 (no popup, no TTS) and don't suppress anything for real --
-  just print the model's verdict/reason/tightened question as JSON to stdout. For testing
-  the filter itself.
+  Print the verdict, reason and tightened question as JSON and call nothing downstream --
+  no popup, no TTS, no suppression for real.
 
 .PARAMETER TimeoutSec
-  Budget for the local model chat completion. Default 8s. On timeout, fails open per the
-  DESCRIPTION above.
+  Budget for the chat completion. Default 8s. On timeout, fails open.
 
 .PARAMETER LlamaBaseUrl
-  Base URL of the local llama-server. Defaults to the suite's shared chat instance
-  (packages/llama-local-server/config.js -> 127.0.0.1:8090). Overridable so the smoke test
-  can point at a dead port to verify the fail-open path.
+  Base URL of the local llama-server. Defaults to the suite's shared chat instance on
+  127.0.0.1:8090. Overridable so the smoke test can verify the fail-open path against a
+  dead port.
 
 .PARAMETER AskQuestionPath
   Path to the real ask-question.ps1. Defaults to the installed copy at
-  ~/.claude/bin/ask-question.ps1 (what SKILL.md actually tells Claude to call today), not
-  this repo's bug-me-claude checkout -- keeps this script working the same way regardless
-  of where the bug-me-claude source tree happens to live. Also the seam the smoke test
-  uses to exercise the "ask" path against a stub instead of a real popup.
+  ~/.claude/bin/ask-question.ps1 -- what SKILL.md tells Claude to call -- rather than a
+  bug-me-claude checkout, so this works wherever that source tree lives. Also the seam
+  the smoke test uses to exercise the "ask" path against a stub.
 
 .NOTES
-  Embedded double quotes: `powershell.exe -File` re-parses its arguments and SILENTLY
-  TRUNCATES a value at an embedded `"`. That bites the *caller* of this script (Claude
-  invoking `powershell.exe -File ask-question-prefilter.ps1 -Question "...\"...\""`) exactly
-  as it already bites direct callers of ask-question.ps1 -- nothing this script can do about
-  that end; the guidance is in ../README.md and ../proposed/SKILL-addendum.md. What this
-  script *does* guard is the new hazard it would otherwise introduce: the model-generated
-  tightened question is scrubbed of `"` before being forwarded onward, so an LLM's habit of
-  quoting things can't silently truncate a question that the caller passed in cleanly.
+  `powershell.exe -File` silently truncates an argument at an embedded `"`. That bites
+  this script's own caller exactly as it bites direct callers of ask-question.ps1, and
+  nothing here can fix that end. What it does guard is the hazard it would otherwise
+  introduce: the model-generated tightened question is scrubbed of `"` before being
+  forwarded on.
 #>
 param(
     [string]$Question = "Claude has a question.",
@@ -96,10 +82,9 @@ Respond with ONLY a single-line JSON object, no markdown fences, no commentary, 
 {"verdict":"ask|skip","reason":"<short reason, under 15 words>","tightened_question":"<Question tightened to one short spoken sentence>"}
 '@
 
-# Mirrors packages/llama-local-server/server.js's isUp(): one short-timeout probe,
-# no retry, no attempt to spawn the server ourselves -- starting a cold llama-server
-# can take up to ~30s (see config.js), which would defeat the point of a *quick*
-# pre-interrupt check. If it's not already up, we just fail open.
+# One short-timeout probe, no retry, and no attempt to spawn the server: a cold
+# llama-server can take ~30s to come up, which would defeat the point of a *quick*
+# pre-interrupt check. Not already up means fail open.
 function Test-LlamaUp {
     try {
         $r = Invoke-WebRequest -Uri "$LlamaBaseUrl/health" -TimeoutSec 2 -UseBasicParsing
@@ -109,19 +94,18 @@ function Test-LlamaUp {
     }
 }
 
-# An embedded double quote silently truncates a value when it crosses a
-# `powershell.exe -File` boundary or a native-exe arg boundary (ask-question.ps1 forwards
-# to wt-focus.exe). Anything this script *generates* and forwards gets scrubbed; single
-# quotes read identically once TTS speaks it aloud. Newlines are flattened for the same
-# reason -- the spoken question is meant to be one sentence anyway.
+# An embedded double quote silently truncates a value crossing a `powershell.exe -File`
+# or native-exe argument boundary, and ask-question.ps1 forwards to wt-focus.exe. Single
+# quotes read identically once TTS speaks it. Newlines are flattened because the spoken
+# question is meant to be one sentence anyway.
 function ConvertTo-SafeArg {
     param([string]$Text)
     if (-not $Text) { return "" }
     return ($Text -replace '"', "'" -replace '[\r\n]+', ' ').Trim()
 }
 
-# Extracts the outermost {...} substring and parses it. Tolerates the model wrapping
-# the JSON in commentary or code fences despite instructions not to.
+# Outermost {...} substring, so the model wrapping its JSON in commentary or code
+# fences despite instructions is tolerated.
 function Get-JsonVerdict {
     param([string]$Content)
     if (-not $Content) { return $null }
@@ -189,12 +173,10 @@ if ($judgment) {
         $effectiveVerdict = $judgment.verdict
         $effectiveReason  = $judgment.reason
     }
-    # Only accept a tightening that is actually a tightening, and is still a question.
-    # Observed failure mode with the 3B model: given "Should I use tabs or spaces?" plus a
-    # detail implying the answer, it returns "Use tabs consistently." -- shorter, but now a
-    # statement asserting an answer the user never gave. Requiring a question mark cheaply
-    # rules that whole class out. Also rejects empty/degenerate and non-shortening results;
-    # in any of those cases the caller's own wording is the safer thing to speak.
+    # Accept only a tightening that is actually shorter AND still a question -- the 3B
+    # model will otherwise turn a question into a statement asserting an answer the user
+    # never gave, which TTS then speaks at them. See ../CLAUDE.md. In every rejected
+    # case the caller's own wording is the safer thing to speak.
     $t = $judgment.tightened_question
     if (-not $NoTighten -and
         $t.Length -ge 8 -and
@@ -203,8 +185,7 @@ if ($judgment) {
         $effectiveQuestion = $t
     }
 }
-# else: local model unreachable/unusable -- fail open, defaults above already say
-# verdict=ask, question unchanged.
+# else: model unreachable or unusable -- the defaults above already fail open.
 
 if ($DryRun) {
     [pscustomobject]@{

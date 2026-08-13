@@ -1,27 +1,21 @@
 #!/usr/bin/env node
 'use strict';
 
-// classify.js -- pick one label from a fixed, closed list for a piece of
-// text, or for each of several short items in one batched request. See
-// SKILL.md for when this is (and isn't) an appropriate thing to delegate.
+// classify.js -- pick one label from a fixed, closed list, for one text or
+// for each of several short items in one batched request. See SKILL.md for
+// when this is an appropriate thing to delegate.
 //
-// Input: one JSON object, via `--in <file.json>` (preferred) or on stdin.
-// One of:
+// Input: one JSON object, via `--in <file.json>` (preferred) or on stdin:
 //   { "text": "...", "labels": ["a", "b", "c"] }
-//   { "items": ["...", "...", "..."], "labels": ["a", "b", "c"] }
-// Optional: "context" -- a short line of extra guidance on what the labels
-// mean, e.g. "these are support ticket subjects".
+//   { "items": ["...", "..."], "labels": ["a", "b", "c"] }
+// Optional "context": one line on what the labels mean.
 //
-// Output (stdout):
-//   single text  -> the chosen label, one line
-//   items array  -> one label per line, in input order
-// The model may answer "unclear" (always implicitly a valid choice, even if
-// not in your labels list) if truly none of the given labels fit -- that's
-// a legitimate result, not a failure, and still exits 0.
+// Output: the chosen label, or one label per line in input order. "unclear"
+// is always a valid choice even when not in the caller's list, and is a
+// legitimate exit-0 result.
 //
-// Exit codes: 0 = usable result on stdout. 1 = delegation failed entirely
-// (bad input, server unavailable, unusable model response) -- message on
-// stderr, do the classification yourself instead of retrying this script.
+// Exit 1 means delegation failed (bad input, server unavailable, unusable
+// response) -- do the classification yourself rather than retrying.
 
 const { ensureRunning, chatJSON, truncate, readInputJSON, failAndExit } = require('./lib/local-client');
 

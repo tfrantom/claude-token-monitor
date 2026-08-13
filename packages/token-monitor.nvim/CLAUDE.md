@@ -35,8 +35,51 @@ watcher's own `ACTIVE_SESSION_WINDOW_MS` governs the data; this governs the
 display.
 
 Ended sessions are filtered client-side, same as in `statusline.js` — the
-watcher keeps them in the file on purpose (flagged `ended: true`) so other
-consumers can observe the live→ended transition.
+watcher keeps them in the file on purpose (flagged `ended: true`, for the rest
+of its 30-minute window) so other consumers can observe the live→ended
+transition. Every status bar drops them on its own instead. Do not "fix" this
+by filtering upstream.
+
+## It is installed by writing a lazy.nvim spec
+
+`install.ps1` writes `~/AppData/Local/nvim/lua/plugins/claude-token-monitor.lua`,
+a spec whose `dir=` points at this package in place — a local plugin, not a git
+remote. Consequences:
+
+- Hand-edits to that generated file are lost on the next install run. Change
+  the here-string in `install.ps1` instead.
+- Re-run the installer after moving the suite; `dir=` is an absolute path.
+- On a machine with no `%LOCALAPPDATA%\nvim`, the installer prints `[skip]` and
+  returns 0. That is a skip, not a failure — the suite installer treats it as
+  success and should keep doing so.
+- The generated file is written no-BOM via `[System.IO.File]::WriteAllText`.
+  Neovim reads it as Lua source and a BOM lands as a stray character before
+  `return`. See the suite CLAUDE.md "PowerShell 5.1 encoding".
+
+## Only the active session gets agent detail
+
+The active session renders a per-agent `<tokens>-<cost>` list; every other
+session collapses to a count badge (`3A`). Detail belongs where you are
+looking — N windows each rendering N agent lists makes the line unusable. This
+mirrors `statusline.js`; keep the two in step.
+
+A session's `totals.cost_usd` already **includes** its subagents' spend, so the
+per-agent figures are a breakdown, not something to add on. Subagent spend was
+missing before 2026-08-06 and is worth roughly 18%, so anything compared
+against a number cached before then will show a step change that is not a bug.
+
+## Formatting mirrors statusline.js
+
+`fmt_cost_short` and `fmt_num` must stay byte-identical in output to
+`statusline.js`'s `fmtCostShort` / number scaling, so the two bars agree.
+`scale()` drops a trailing `.0` deliberately: on a space-constrained line
+`150M` beats `150.0M`, and one decimal only carries information below ~10 of a
+unit.
+
+The semantic layer only ever annotates the thinking bucket's existing total, so
+with no classified turns yet (cold start, or llama-server unreachable)
+`fmt_thinking` falls back to the plain number rather than rendering a
+misleading `0%`.
 
 ## Testing
 

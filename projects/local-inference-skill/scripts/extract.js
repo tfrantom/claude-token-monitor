@@ -1,25 +1,19 @@
 #!/usr/bin/env node
 'use strict';
 
-// extract.js -- pull one specific, literal value out of a block of text.
-// Not a paraphrase or a judgment call -- the model is instructed to report
-// only what's explicitly present, and say so plainly when it isn't. See
-// SKILL.md for scope.
+// extract.js -- pull one specific, literal value out of a block of text. Not
+// a paraphrase or a judgment call. See SKILL.md for scope.
 //
 // Input: one JSON object, via `--in <file.json>` (preferred) or on stdin:
 //   { "text": "...", "field": "the invoice total", "instructions": "..." }
-// "field" (required) is a short description of what to pull out, e.g.
-// "the customer's email address" or "the version number in the heading".
-// "instructions" (optional) is extra guidance (format, units, etc).
+// "field" (required) describes what to pull out; "instructions" (optional) is
+// extra guidance on format or units.
 //
-// Output (stdout): the extracted value as plain text, or the literal
-// "(not found)" if the field genuinely isn't present in the text -- both
-// are legitimate results and exit 0. Only delegation failure exits 1.
+// Output: the extracted value, or the literal "(not found)". Both are
+// legitimate exit-0 results.
 //
-// Exit codes: 0 = usable result on stdout (value, or "(not found)"). 1 =
-// delegation failed entirely (bad input, server unavailable, unusable model
-// response) -- message on stderr, do the extraction yourself instead of
-// retrying this script.
+// Exit 1 means delegation failed (bad input, server unavailable, unusable
+// response) -- do the extraction yourself rather than retrying.
 
 const { ensureRunning, chatJSON, truncate, readInputJSON, failAndExit } = require('./lib/local-client');
 

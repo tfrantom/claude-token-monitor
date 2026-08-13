@@ -2,26 +2,23 @@
 
 A Claude Code skill, packaged for install into `~/.claude/skills/token-usage/`.
 Part of the [claude-token-monitor suite](../../README.md), but the *installed
-copy* is deliberately self-contained (see `scripts/lookup.js`'s own comment)
-— it survives this suite moving, breaking, or this repo not existing at all,
-as long as `packages/token-monitor-core`'s `state/status.json` is still
-where it expects it (hardcoded path, currently
-`C:/projects/claude-token-monitor/packages/token-monitor-core/state/status.json`
-— update both this source copy *and* re-run `install.ps1` if that ever
-changes).
+copy* is self-contained: it requires nothing from the suite and keeps working
+if the suite moves, breaks, or is absent, as long as
+`packages/token-monitor-core`'s `state/status.json` is where `config.json`
+says it is.
 
 ## Files
 
-- `SKILL.md` — the actual skill definition (frontmatter + instructions for
-  Claude). Copied verbatim to `~/.claude/skills/token-usage/SKILL.md`.
-- `scripts/lookup.js` — self-contained Node script, no requires from the rest
-  of this suite. Copied to `~/.claude/skills/token-usage/scripts/lookup.js`.
-- `install.ps1` — copies both of the above into place, and idempotently
-  inserts/updates a marked block in `~/.claude/CLAUDE.md`
+- `SKILL.md` — the skill definition (frontmatter + instructions for Claude).
+  Copied verbatim to `~/.claude/skills/token-usage/SKILL.md`.
+- `scripts/lookup.js` — self-contained Node script. Copied to
+  `~/.claude/skills/token-usage/scripts/lookup.js`.
+- `install.ps1` — copies both into place, writes
+  `~/.claude/skills/token-usage/config.json` with the resolved suite paths,
+  and inserts or updates a marked block in `~/.claude/CLAUDE.md`
   (`<!-- token-usage-skill:start/end -->`) so future sessions know the skill
-  exists without having to rediscover it. Safe to re-run any time either
-  source file changes — it replaces the installed copies and the CLAUDE.md
-  block in place rather than duplicating.
+  exists. Idempotent: it replaces the installed copies and the CLAUDE.md block
+  in place rather than duplicating.
 
 ## Install / reinstall
 
@@ -29,21 +26,15 @@ changes).
 .\install.ps1
 ```
 
-**Watch out:** if you edit `scripts/lookup.js` or `SKILL.md` here, those
-edits do nothing on their own — the installed copy under `~/.claude/skills/`
-is what Claude Code actually reads, and it goes stale until you re-run
-`install.ps1`. This bit a live re-path once already. **`SKILL.md` was edited on
-2026-08-06** (to note that session totals now include subagent spend) and the
-installed copy has not necessarily been refreshed since — re-run
-`install.ps1` if in doubt.
+**Editing `SKILL.md` or `scripts/lookup.js` here changes nothing until you
+re-run this.** Claude Code reads the copy under `~/.claude/skills/`. See
+[`CLAUDE.md`](CLAUDE.md).
 
-## What the numbers now include
+## What the numbers include
 
-The lookup reads `status.json` as an opaque blob, so it inherits whatever the
-watcher writes. Two changes there are visible through this skill without any
-change to `lookup.js`:
+`lookup.js` treats `status.json` as an opaque blob, so it inherits whatever the
+watcher writes:
 
-- **Session totals include subagent (Task) spend** as of 2026-08-06 —
-  previously missing, worth roughly 18%.
-- Sessions carry an `agents` array (running agents only). `lookup.js` doesn't
-  render it; `--json` exposes it if you want it.
+- **Session totals include subagent (Task) spend** — worth roughly 18%.
+- Sessions carry an `agents` array of currently-running agents. `lookup.js`
+  does not render it; `--json` exposes it.

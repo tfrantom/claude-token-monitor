@@ -1,14 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-// Offline checks for token-monitor-core -- the package everything else in the
-// suite reads the output of, and the one that shipped longest without a test
-// of its own (run-checks.js used to list it under "no check of their own").
-//
-// Wholly offline and side-effect free: no network, no LLM, no watcher, and
-// nothing under state/ is read or written. Transcript fixtures are written to
-// a fresh mkdtemp dir; the renderer is driven through renderLine's test-only
-// status override rather than against the live status.json the watcher owns.
+// Offline checks for token-monitor-core: no network, no LLM, no watcher, and
+// nothing under the real state/ is read or written.
 //
 //   node packages/token-monitor-core/test.js
 
@@ -17,10 +11,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-// Redirected BEFORE anything requires ./config, so the claim above -- that
-// nothing under the real state/ is read or written -- is enforced rather than
-// merely intended. The supervisor checks at the bottom read and write lock and
-// stamp files for real; without this they would fight the live watcher.
+// Redirected BEFORE anything requires ./config: the supervisor checks below
+// write real lock and stamp files, which would otherwise fight the live
+// watcher.
 const stateTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tmc-core-state-'));
 process.env.TOKEN_MONITOR_STATE_DIR = stateTmp;
 
@@ -75,14 +68,11 @@ check('model ids resolve to the right rate card entry', () => {
 });
 
 check('opus-5 matches ahead of the opus-4-x fallback', () => {
-  // Ordering regression guard: a looser /opus-4/ rule placed first would
-  // silently price Opus 5 turns off the 4.x row.
   assert.strictEqual(priceFor('claude-opus-5').input, 5.0);
   assert.strictEqual(priceFor('claude-opus-4-7').name, 'Claude Opus 4.x');
 });
 
 check('the [1m] long-context variant prices as the base model', () => {
-  // There is no >200k premium tier; if someone ever adds one, this fails.
   const base = costForTurn(outputOnly('claude-opus-5', 1e6, { at_ms: AUG }));
   const long = costForTurn(outputOnly('claude-opus-5[1m]', 1e6, { at_ms: AUG }));
   assert.strictEqual(long.cost, base.cost);
@@ -100,7 +90,6 @@ check('sonnet 5 reverts to standard after the window closes', () => {
 });
 
 check('a dated rate is chosen by the turn timestamp, not by wall clock', () => {
-  // Re-parsing an August transcript in September must still bill August rates.
   const aug = rateFor(priceFor('claude-sonnet-5'), { atMs: AUG });
   const sep = rateFor(priceFor('claude-sonnet-5'), { atMs: SEP });
   assert.strictEqual(aug.output, 10.0);
@@ -151,8 +140,8 @@ const ASSISTANT_USAGE = {
 };
 
 check('usage is counted once per message.id, not once per content-block line', () => {
-  // One API turn split across three JSONL lines, each repeating the same
-  // `usage`. Counting per line would treble every number.
+  // One turn, three lines, each repeating the same usage: per-line counting
+  // would treble every number.
   const p = fixture('multiblock.jsonl', [
     { type: 'user', timestamp: '2026-08-07T12:00:00Z', message: { content: 'do a thing for me please' } },
     { type: 'assistant', timestamp: '2026-08-07T12:00:01Z', message: { id: 'm1', model: 'claude-opus-5', usage: ASSISTANT_USAGE, content: [{ type: 'thinking', thinking: 'hmm' }] } },
@@ -178,8 +167,6 @@ check('output tokens are prorated across blocks and sum to the turn total', () =
 });
 
 check('injected pseudo-user turns are kept out of userTexts', () => {
-  // These arrive as type:"user" but are not things the human typed. Letting
-  // them through lets a background agent report rename the session.
   const p = fixture('injected.jsonl', [
     { type: 'user', timestamp: '2026-08-07T12:00:00Z', message: { content: 'genuine opening message from the human' } },
     { type: 'user', timestamp: '2026-08-07T12:00:01Z', message: { content: '<task-notification>agent finished</task-notification>' } },
@@ -267,8 +254,7 @@ check('the active session sorts first and shows its agent breakdown', () => {
     },
   }));
   assert.ok(out.indexOf('Mine') < out.indexOf('Test Session'), 'active session leads even when older');
-  // "1k-0.5" == 1000 tokens / $0.50. fmtK drops a trailing ".0" on purpose,
-  // so this is "1k" and not "1.0k".
+  // "1k-0.5" == 1000 tokens / $0.50, with fmtK's trailing ".0" dropped.
   assert.ok(out.includes('1k-0.5'), `active session renders its per-agent breakdown, got: ${out}`);
 });
 
@@ -335,10 +321,9 @@ check('joinRecent pulls older context in only up to the minimum', () => {
 
 // ------------------------------------------------- watcher supervision --
 //
-// Only the branches that decide NOT to spawn are exercised here. The one that
-// does spawn is deliberately left to test-lifecycle.js: a unit test that
-// launches a real watcher daemon as a side effect is a unit test that leaves a
-// daemon behind when it fails.
+// Only the branches that decide NOT to spawn. The spawning one belongs to
+// test-lifecycle.js -- a unit test that launches a daemon leaves one behind
+// when it fails.
 
 const supervisor = require('./lib/supervisor');
 const cfg = require('./config');
@@ -356,8 +341,7 @@ function resetSupervisorState() {
 
 check('supervisor reports a live lock holder as running', () => {
   resetSupervisorState();
-  // This process is, definitionally, alive.
-  fs.writeFileSync(supervisor.LOCK_FILE, String(process.pid));
+  fs.writeFileSync(supervisor.LOCK_FILE, String(process.pid)); // definitionally alive
   assert.strictEqual(supervisor.ensureWatcher(), 'running');
 });
 
@@ -393,8 +377,7 @@ check('repeated failures stop the retry loop instead of spawning forever', () =>
 check('a dead pid in the lock file does not count as a running watcher', () => {
   resetSupervisorState();
   fs.writeFileSync(supervisor.LOCK_FILE, '999999');
-  // Paired with the sentinel so the assertion is about liveness only and no
-  // spawn can happen either way.
+  // Sentinel too, so no spawn can happen and the assertion is about liveness.
   fs.writeFileSync(supervisor.DISABLE_FILE, 'paused');
   assert.strictEqual(supervisor.ensureWatcher(), 'disabled');
   assert.strictEqual(supervisor.watcherPid(), null);
@@ -411,10 +394,8 @@ check('a corrupt lock file is treated as no watcher, not as a crash', () => {
 const { watcherMessage } = require('./statusline');
 
 check('every supervisor state gets a distinguishable status line message', () => {
-  // The point of the states is that a user can tell "coming up in a second"
-  // apart from "broken, go look"; collapsing any two into the same text
-  // defeats it. ('running' only reaches here via the default arm, since a
-  // running watcher means a status.json exists to render instead.)
+  // Collapsing any two defeats the point of having the states. ('running'
+  // only reaches here via the default arm.)
   const states = ['running', 'starting', 'cooldown', 'failed', 'disabled'];
   const seen = new Set(states.map((s) => watcherMessage(s)));
   assert.strictEqual(seen.size, states.length, `messages collapsed: ${[...seen].join(' | ')}`);

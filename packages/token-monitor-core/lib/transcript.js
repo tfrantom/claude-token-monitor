@@ -36,39 +36,24 @@ function emptyTotals() {
   };
 }
 
-// One JSONL line == one content block, but every block belonging to the same
-// API turn repeats that turn's full `usage` — so usage must be counted once
-// per message.id, while content blocks accumulate across lines that share it.
-//
-// Proration weight: inter-block wall-clock deltas, not character length.
-// Claude Code's default `display: "omitted"` leaves thinking blocks' text
-// empty, so a char-length weight always assigns thinking a 0 share even when
-// real thinking tokens were spent. Each block's JSONL line is timestamped as
-// it streams in, so the gap since the previous block (or turn start) is a
-// working proxy for how many tokens that block cost, and it degrades to
-// roughly the same signal as length for text/tool_use blocks anyway.
-// Text sent to the semantic classifier for a block worth judging — only
-// thinking and tool_use carry a quality/purpose signal worth a model's
-// attention (see token-classifier-demo/PLAN.md §1); writing blocks are
-// already the answer the user sees, so they're left out of `turns` entirely.
+// Null for anything the semantic classifier has no verdict for -- a writing
+// block is already the answer the user sees, so it never enters `turns`.
 function classifiableText(block) {
   if (block.type === 'thinking') return block.thinking || '';
   if (block.type === 'tool_use') return `${block.name || ''}(${JSON.stringify(block.input || {})})`;
   return null;
 }
 
+// Closes one API turn: usage is counted once per message.id here, never per
+// JSONL line. `speed` and `at_ms` are load-bearing inputs to costForTurn and
+// the other call site must pass them too -- see CLAUDE.md "Pricing".
 function finalizeTurn(turn, totals, turns) {
   const u = turn.usage;
   if (!u) return;
   const cacheCreation = u.cache_creation || {};
   const priced = costForTurn({
     model: turn.model,
-    // `usage.speed` is 'standard' | 'fast'. Fast mode is the same model at
-    // premium pricing, so dropping it under-reports a /fast session by half.
     speed: u.speed,
-    // Dated rates (e.g. Sonnet 5's introductory pricing) are resolved against
-    // the turn's own timestamp, so re-parsing an old transcript bills it at
-    // the rate that was actually in force when it ran.
     at_ms: turn.startTs ? Date.parse(turn.startTs) : Date.now(),
     input_tokens: u.input_tokens || 0,
     cache_read_input_tokens: u.cache_read_input_tokens || 0,
@@ -81,13 +66,8 @@ function finalizeTurn(turn, totals, turns) {
   totals.cache_write += (cacheCreation.ephemeral_5m_input_tokens || 0) + (cacheCreation.ephemeral_1h_input_tokens || 0);
   totals.cache_read += u.cache_read_input_tokens || 0;
   totals.cost_usd += priced.cost;
-  // Two distinct ways a number here can be wrong, tracked separately so the
-  // reason survives to whoever reads status.json:
-  //   unpriced_output_tokens -- model id matched nothing in the table, so this
-  //     turn contributed $0. A new model ships and the bar quietly stops
-  //     counting it; this is the only signal that happened.
-  //   fast_unpriced_output_tokens -- fast mode, on a model with no published
-  //     premium rate. Billed at standard, so the number is a floor, not a lie.
+  // Surfaced, not swallowed: these two are the only warning that a turn's cost
+  // is $0 or a floor. See CLAUDE.md "Pricing".
   if (!priced.priced) totals.unpriced_output_tokens += u.output_tokens || 0;
   if (priced.fastUnpriced) totals.fast_unpriced_output_tokens += u.output_tokens || 0;
 
@@ -111,6 +91,9 @@ function finalizeTurn(turn, totals, turns) {
   if (classifiable.length > 0) turns.push({ id: turn.id, model: turn.model, blocks: classifiable });
 }
 
+// Wall-clock deltas, not character length: thinking blocks are logged with
+// empty text, so a length weight gives them a 0 share. See CLAUDE.md
+// "Transcript parsing, and the two things that look like bugs".
 function timeDeltaWeights(turn) {
   const times = turn.blocks.map((b) => (b.ts ? Date.parse(b.ts) : NaN));
   if (times.some((t) => Number.isNaN(t))) return null;
@@ -125,12 +108,8 @@ function timeDeltaWeights(turn) {
 }
 
 // Not everything Claude Code logs as `type: "user"` is something the human
-// typed. Background-task completions, interrupt markers, skill preambles and
-// injected reminders all arrive as user turns, and they are frequently far
-// LONGER than real messages -- one observed `<task-notification>` ran 5111
-// chars against a 184-char actual message. Naming reads userTexts as "what
-// the user is talking about," so letting these through both drowns out real
-// messages and lets a background agent's report rename the session.
+// typed, and naming reads userTexts as what the user is talking about -- see
+// CLAUDE.md "Three traps that had to be fixed together".
 const NON_USER_PREFIXES = [
   '<task-notification>',
   '<system-reminder>',
@@ -141,8 +120,8 @@ const NON_USER_PREFIXES = [
   '<local-command-stdout>',
 ];
 
-// Injected blocks can also be appended to otherwise-real messages, so strip
-// them before deciding whether what's left is genuine user text.
+// They can also be appended to otherwise-real messages, so strip before
+// deciding whether what is left is genuine user text.
 function stripInjectedBlocks(text) {
   return text
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
@@ -157,14 +136,13 @@ function pushUserText(userTexts, raw) {
   userTexts.push(text);
 }
 
-// Parses a Claude Code session transcript JSONL file into classified token
-// totals. Re-parses the whole file each call — session transcripts are small
-// enough (single-digit MB) that this is simpler and safer than incremental
-// byte-offset tailing across turn boundaries that span multiple lines.
+// Parses one session transcript into classified token totals. Re-parses the
+// whole file each call -- measured at 8ms per tick, and a turn spans several
+// lines, so incremental tailing is not worth its edge cases.
 function classifySession(transcriptPath) {
   const totals = emptyTotals();
   const turns = []; // per-turn thinking/tool_use blocks, for the semantic classifier
-  const userTexts = []; // every user turn's text, in order -- naming uses this to react to topic drift, not just the opening message
+  const userTexts = []; // every user turn's text, in order
   const agentUses = []; // Agent (Task) spawns in UI order
   let lastTimestamp = null;
   const modelsSeen = new Set();
@@ -202,12 +180,8 @@ function classifySession(transcriptPath) {
       }
       for (const block of entry.message.content || []) {
         openTurn.blocks.push({ block, ts: entry.timestamp });
-        // Agent (Task) spawns, captured in the order they appear -- which is
-        // the order the UI shows them in. Running-vs-finished is decided by
-        // the watcher from subagent transcript mtime, NOT from whether the
-        // tool_use has a tool_result: a background agent's Task call resolves
-        // immediately at launch, so resolution marks every background agent
-        // finished the instant it starts. See buildAgentList in watcher.js.
+        // Order of appearance == UI order. Whether each is still running is
+        // the watcher's call (buildAgentList), from transcript mtime.
         if (block.type === 'tool_use' && block.name === 'Agent') {
           agentUses.push({ toolUseId: block.id, description: block.input?.description || null });
         }

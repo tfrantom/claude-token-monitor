@@ -1,14 +1,17 @@
 # claude-token-monitor (suite)
 
-Started as one script that watched Claude Code's token usage. Turned out the
-piece that made it work — a persistent local LLM server — is more generally
-useful than the thing it was built for, so this is now a small suite of
-loosely-coupled packages instead of one monolith. Each package under
-`packages/` is scoped tightly enough that it could be extracted into its own
-repo later with minimal surgery (no shared `node_modules`, no build step, no
-package.json anywhere — plain relative `require()`s within a package, never
-reaching across a package boundary except through the one other package it
-explicitly depends on).
+Tracks what every Claude Code session on this machine is spending — tokens,
+cost, and a reading/writing/thinking/tool-call breakdown — and renders it in
+the terminal status line, in Neovim, and via a skill any session can query.
+It runs entirely locally, using a llama.cpp server for session naming and
+classification.
+
+That local LLM server turned out to be the more generally useful half, so the
+suite is a set of loosely-coupled packages rather than one monolith. Each
+package under `packages/` is scoped to be extractable into its own repo with
+minimal surgery: no shared `node_modules`, no build step, no `package.json`
+anywhere, plain relative `require()`s within a package, and no reaching across
+a package boundary except through the one dependency it declares.
 
 ## Packages
 
@@ -17,7 +20,7 @@ explicitly depends on).
 | [`llama-local-server`](packages/llama-local-server/) | Spawns/reuses `llama-server.exe` (llama.cpp), a thin OpenAI-compatible endpoint pointed at a GGUF already on disk. Defaults to `localhost:8090`; `ensureRunning({port, modelPath, …})` stands up additional instances for consumers needing a different model or mode. The actual reusable infra — everything else is a client of this. | nothing else in the suite |
 | [`token-monitor-core`](packages/token-monitor-core/) | The watcher daemon: tails every active Claude Code session's transcript **plus its subagent sidechains**, classifies tokens, prices it, auto-renames sessions, writes `state/status.json`. Singleton — refuses to start if another watcher holds the lock. | `llama-local-server` |
 | [`token-monitor.nvim`](packages/token-monitor.nvim/) | lazy.nvim plugin — reads `status.json`, renders it as a statusline/winbar segment. | reads `token-monitor-core`'s output file; no code dependency |
-| [`token-usage-skill`](packages/token-usage-skill/) | A Claude Code skill (installed into `~/.claude/skills/token-usage/`) so any Claude Code session can look up its own usage. Self-contained once installed — the installed copy has no dependency on this repo staying put. | reads `token-monitor-core`'s output file at a hardcoded path; no code dependency |
+| [`token-usage-skill`](packages/token-usage-skill/) | A Claude Code skill (installed into `~/.claude/skills/token-usage/`) so any Claude Code session can look up its own usage. Self-contained once installed — the installed copy has no dependency on this repo staying put. | reads `token-monitor-core`'s output file at a path resolved into `config.json` at install time; no code dependency |
 
 Dependency direction only ever points at `llama-local-server` — nothing
 depends on `token-monitor-core` except the two things that read its output
@@ -26,10 +29,8 @@ extractable on their own.
 
 ## `projects/`
 
-Extensions to the suite — one folder per idea. These started as primers
-written for whoever (human or agent) picked them up next; **all five are now
-built**, and each folder's `README.md` has been rewritten by its implementer
-to describe what actually exists.
+Extensions to the suite — one folder per idea, each with its own `README.md`
+covering how to run and configure it.
 
 | Project | What it does |
 |---|---|
@@ -39,10 +40,8 @@ to describe what actually exists.
 | [`usage-history-rollups`](projects/usage-history-rollups/) | Persists per-session snapshots to `history.jsonl`, since `status.json` only ever shows "right now" |
 | [`per-project-cost-attribution`](projects/per-project-cost-attribution/) | Attributes cost by real repo/cwd instead of Claude Code's coarse per-terminal grouping |
 
-They are finished packages that still live under `projects/`; promoting any of
-them to `packages/` is a pending decision, not an oversight. See
-[`projects/README.md`](projects/README.md) for status detail and the shared
-infrastructure notes (port claims, `status.json` contract).
+See [`projects/README.md`](projects/README.md) for the shared infrastructure
+notes — port claims and the `status.json` contract.
 
 ## Getting it running on a fresh machine
 
@@ -138,30 +137,23 @@ State lives in `packages/token-monitor-core/state/` — `status.json` (current
 snapshot, overwritten every tick), `names-cache.json`, `semantic-cache.json`,
 `watcher.lock`.
 
-**Only one watcher may run at a time.** It's a singleton over shared state:
-every instance rewrites the same `status.json` on the same cadence, so a
-second one doesn't split the work, it races — and a stale instance running
-older code silently clobbers a newer one's output with plausible-looking
-wrong data. This happened for real (three at once, from three different Claude
-Code sessions), so the watcher takes a PID-file lock and refuses to start if a
-live one already holds it.
+**Only one watcher runs at a time**, enforced by a PID lock. Two watchers do
+not split the work — they race on `status.json`, and the loser's stale data
+looks perfectly plausible.
 
-**Only one shared llama-server may run**, for the same reason plus a much
-more expensive one: each is a resident copy of the model on the GPU. Two
-processes racing to spawn it is a real case — two sessions opened in the same
-second both see nothing on 8090 — so the spawn is serialised behind a lock and
-the loser waits for the winner's server instead of failing to bind.
+**Only one shared llama-server runs**, enforced by a spawn lock; each instance
+is a resident copy of the model on the GPU. Ownership is recorded on disk in
+`~/.claude/llama-local-server/`, not held in a variable, because the process
+that starts a server is usually far shorter-lived than the server. That record
+is what lets the watcher stop an instance a one-shot skill call started, and
+lets a new watcher adopt one orphaned by a hard kill. **No record means no
+kill** — a `llama-server` you started by hand is reused and left alone.
 
-Because the instance outlives whichever short-lived process started it,
-ownership is recorded on disk (`~/.claude/llama-local-server/chat-shared.json`)
-rather than held in a variable. That record is what lets the watcher stop a
-server a one-shot skill invocation started, and what lets a *new* watcher adopt
-one orphaned by a hard kill. **No record means no kill** — a `llama-server` you
-started by hand on 8090 is reused and left alone.
+Expect **more than one** `llama-server.exe`: 8090 is the shared chat instance,
+and anything else built on `llama-local-server` may hold a port of its own.
+Kill by PID or port, never by image name.
 
-Note there may be **more than one** `llama-server.exe` running: 8090 is the
-shared chat instance, and anything else built on `llama-local-server` may hold
-a port of its own. Kill by PID or port, never by image name.
+See [`CLAUDE.md`](CLAUDE.md) for why each of these is the way it is.
 
 Several other daemons are optional companions rather than part of the watcher:
 `projects/usage-history-rollups/poller.js` and
@@ -185,9 +177,7 @@ If you move or rename a package, all of these need updating too. Re-run
 `install.ps1` is a pure discovery driver with no special cases: it globs
 `packages/<x>/install.ps1` and `projects/<x>/install.ps1` and runs each in
 turn, so a new component with an installer is picked up without editing it.
-The status line and the Neovim spec used to be written inline by the root
-script and are now ordinary components like the two skills — which means each
-package can also be installed on its own:
+Each package can therefore also be installed on its own:
 
 ```powershell
 .\packages\token-monitor-core\install.ps1     # just the Claude Code status line

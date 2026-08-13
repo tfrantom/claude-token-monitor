@@ -4,24 +4,19 @@
 
 .DESCRIPTION
   Wires every external integration point to wherever this suite actually
-  lives. Nothing here assumes C:\projects\claude-token-monitor -- the suite
-  root is derived from this script's own location (or passed explicitly),
-  and every generated path is built from it.
+  lives. Nothing assumes C:\projects\claude-token-monitor -- the suite root is
+  derived from this script's own location, or passed explicitly, and every
+  generated path is built from it. Idempotent: re-run it after moving the
+  suite, which is the whole point.
 
-  Idempotent: safe to re-run any time the suite moves or a package changes.
-  Re-run it *after* moving the suite -- that's the whole point.
-
-  Every integration is owned by the component it belongs to and *discovered*,
-  not hardcoded: each packages\<x>\install.ps1 and projects\<x>\install.ps1 is
-  run, in that order. Add a component installer following that convention and
-  this script picks it up with no edit here. There are no special cases left
-  in this file -- the status line and the Neovim spec are ordinary components
-  like the skills are, and each can be installed on its own.
+  A pure discovery driver. Each packages\<x>\install.ps1 and
+  projects\<x>\install.ps1 is run, in that order, with no special cases here;
+  a new component installer following that convention is picked up with no
+  edit to this file.
 
   Long-running processes -- the watcher, the optional project daemons, the
   llama.cpp server instances -- are deliberately NOT started or managed here.
-  This installer only wires static config; the last section reports what's
-  running and how to start what isn't. See the comment above that section.
+  The last section reports what is running and how to start what isn't.
 
 .PARAMETER SuiteRoot
   Override the auto-detected suite root (defaults to this script's directory).
@@ -35,9 +30,8 @@
   component installer).
 
 .PARAMETER SkipComponents
-  Don't run any discovered per-package / per-project installer. This is now
-  the switch that makes the script write nothing at all: every integration --
-  status line, Neovim spec, both skills -- is owned by a component.
+  Don't run any discovered per-package / per-project installer. Since every
+  integration is owned by a component, this makes the script write nothing.
 #>
 param(
     [string]$SuiteRoot,
@@ -69,15 +63,10 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
     Write-Warning "  node.exe not on PATH -- the watcher and skill lookup both need it."
 }
 
-# The llama.cpp binary and the GGUF are the only machine-specific values left,
-# and config.js resolves both (env var -> config.local.js -> discovery) rather
-# than holding a hardcoded path. So ASK it what it resolved instead of parsing
-# it: this used to regex out a quoted default, which stopped meaning anything
-# the moment those defaults became resolvers, and would have quietly reported
-# a stale path. Running the file is also the only way to get the same answer
-# the watcher will get.
-#
-# A miss here is a warning, not a failure -- an env var set later still wins.
+# config.js resolves the llama.cpp binary and the GGUF (env var ->
+# config.local.js -> discovery), so ask it what it resolved rather than
+# parsing it -- running the file is the only way to get the answer the watcher
+# will get. A miss is a warning, not a failure: an env var set later wins.
 $llamaCfg = Join-Path $SuiteRoot "packages\llama-local-server\config.js"
 if ((Test-Path $llamaCfg) -and (Get-Command node -ErrorAction SilentlyContinue)) {
     $json = & node -e "const p=require('path');const c=require(p.resolve(process.argv[1]));process.stdout.write(JSON.stringify({exe:c.LLAMA_SERVER_EXE,model:c.LLAMA_MODEL_PATH,ref:c.LLAMA_MODEL}))" $llamaCfg 2>$null
@@ -104,28 +93,16 @@ if ((Test-Path $llamaCfg) -and (Get-Command node -ErrorAction SilentlyContinue))
 }
 
 # ------------------------------------------------------------ components ---
-# Discovered, not hardcoded. This section used to be a single hardcoded call
-# to packages\token-usage-skill\install.ps1, and it silently went stale the
-# moment projects\local-inference-skill\ grew an installer of its own. Globbing
-# for the convention instead means the next one costs nothing.
-#
-# The convention a component installer must follow to be picked up:
+# Discovered, not hardcoded. The convention a component installer must follow
+# to be picked up:
 #   * install.ps1 at the component root (packages\<x>\ or projects\<x>\)
 #   * idempotent -- this whole script is re-run whenever the suite moves
 #   * optionally takes -SuiteRoot; it's passed when the parameter exists
 #   * self-skip rather than fail when its integration target is absent (see
 #     token-monitor.nvim, which returns early on a machine with no Neovim)
-#
-# The statusline and Neovim wiring used to be written inline here. They now
-# live in packages\token-monitor-core\install.ps1 and
-# packages\token-monitor.nvim\install.ps1 and are picked up by the same glob
-# as everything else -- so this script has no special cases left, and each
-# package can be installed on its own without running the suite installer.
-# That is the point of the layout: every package under packages\ is meant to
-# be extractable into its own repo with minimal surgery.
 $failedComponents = @()
 
-# -SkipNvim / -SkipStatusLine now suppress the component that owns each
+# -SkipNvim / -SkipStatusLine suppress the component that owns each
 # integration, so the switches keep meaning what they always meant.
 $skipComponentNames = @()
 if ($SkipStatusLine) { $skipComponentNames += 'token-monitor-core' }
@@ -161,11 +138,9 @@ if (-not $SkipComponents) {
         Write-Host ""
         Write-Host "  --- $label"
 
-        # One component failing shouldn't abort the rest of the install: these
-        # are independent integrations, and the projects\ ones are optional
-        # extensions. Failures are collected and reported at the end.
+        # These are independent integrations, so one failing must not abort
+        # the rest. Failures are collected and reported at the end.
         try {
-            # Not every component installer necessarily accepts -SuiteRoot.
             # Get-Command parses the script to answer this; it does not run it.
             $takesSuiteRoot = $false
             try {
@@ -184,29 +159,13 @@ if (-not $SkipComponents) {
 }
 
 # -------------------------------------------------------------- services ---
-# Reported, never managed. Several parts of the suite are now standing
-# processes -- the watcher, two optional project daemons, and up to three
-# llama-server.exe instances -- and it's tempting to have the installer start
-# them or register them as scheduled tasks / services. Deliberately not doing
-# that, for three reasons:
-#
-#   1. Scope. Everything above writes a config file that points at this suite
-#      and then stops. That's a step you re-run after moving the suite, and
-#      it's safe precisely because it never leaves a process behind. Starting
-#      daemons would make "install" mean two very different things.
-#   2. It would be redundant. The watcher starts itself the next time Claude
-#      Code renders a status line, and stops itself once no session is live;
-#      the llama.cpp instances are spawned on demand by whichever client needs
-#      them (ensureShared/ensureRunning) and stopped with the watcher.
-#      Pre-starting anything here would duplicate that logic and could contend
-#      with a client mid-spawn. "not listening" is the normal resting state.
-#   3. Lifetime mismatch. The project daemons are opt-in, cheap to start, and
-#      the two that exist deliberately tolerate being started late, restarted,
-#      or run while the watcher is down. Auto-registering them would make the
-#      installer own an uninstall story it doesn't currently need.
-#
-# So: detect and print, with the exact command to start each. Purely
-# informational -- nothing below changes any state.
+# Reported, never managed -- nothing below changes any state. Starting the
+# standing processes here would be redundant and could contend with a client
+# mid-spawn: the watcher starts itself on the next status line render and
+# stops itself once no session is live, and the llama.cpp instances are
+# spawned on demand and stopped with it. "not listening" is the normal resting
+# state. It would also make this script own an uninstall story it does not
+# need, when today it only ever writes config and stops.
 Write-Host ""
 Write-Host "Background services (this installer does not start or manage these)"
 
@@ -229,13 +188,11 @@ $daemons = @(
 foreach ($d in $daemons) {
     $abs = Join-Path $SuiteRoot $d.Rel
     if (-not (Test-Path $abs)) { continue }   # component not present in this copy
-    # Two launch styles both have to count as running, since both are in use:
-    #   node C:/.../packages/token-monitor-core/watcher.js   (path-qualified)
-    #   node watcher.js                                      (from its own cwd)
-    # The first is matched on the trailing <dir>\<script>; the second on the
-    # bare script name as a standalone argument. Win32_Process exposes no cwd,
-    # so a same-named script run from an unrelated directory would also read as
-    # up -- acceptable for a status line that starts nothing.
+    # Both launch styles count as running: path-qualified (matched on the
+    # trailing <dir>\<script>) and bare `node watcher.js` from its own cwd
+    # (matched on the script name as a standalone argument). Win32_Process
+    # exposes no cwd, so a same-named script elsewhere also reads as up --
+    # acceptable for a report that starts nothing.
     $leaf    = Split-Path $d.Rel -Leaf
     $dirLeaf = Split-Path (Split-Path $d.Rel -Parent) -Leaf
     $bare    = '(?i)(^|[\s"])(\.\\)?' + [regex]::Escape($leaf) + '("|\s|$)'
@@ -250,9 +207,8 @@ foreach ($d in $daemons) {
 # Ports are informational only: these are spawned on demand by whichever
 # client needs them, so "down" here is not a problem to fix.
 if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
-    # Read from the registry rather than restated here, so a new claim shows up
-    # in this output without editing the installer -- and so this can never
-    # disagree with what the code actually uses.
+    # Read from the port registry rather than restated here, so this can never
+    # disagree with what the code uses.
     $ports = @()
     $portsJson = & node -e "const p=require('path');const r=require(p.resolve(process.argv[1]));process.stdout.write(JSON.stringify(r.list().map(c=>({Port:c.port,What:c.owner+' -- '+c.model}))))" (Join-Path $SuiteRoot "packages\llama-local-server\ports.js") 2>$null
     if ($LASTEXITCODE -eq 0 -and $portsJson) {

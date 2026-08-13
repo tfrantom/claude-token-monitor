@@ -4,9 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const cfg = require('../config');
 
-// Every transcript on disk, not just the currently-active ones. The watcher
-// deliberately only looks at the last 30 minutes; attribution is a
-// look-back question, so the default scope here is "all of history".
+// Every transcript on disk, not just the active ones the watcher looks at:
+// attribution is a look-back question, so the default scope is all history.
 function findTranscripts({ since = null, project = null } = {}) {
   const out = [];
   let dirs;
@@ -48,11 +47,9 @@ function findTranscripts({ since = null, project = null } = {}) {
   return out.sort((a, b) => a.mtimeMs - b.mtimeMs);
 }
 
-// Sidechain transcripts live in `<projects>/<claude-project>/<session-id>/
-// subagents/agent-*.jsonl`, each with an `agent-*.meta.json` naming the
-// agent type and the task it was spawned for. They hold real API turns with
-// their own `usage` and their own `cwd`, and nothing in token-monitor-core
-// reads them.
+// Sidechain transcripts at `<projects>/<claude-project>/<session-id>/
+// subagents/agent-*.jsonl`, each with an `agent-*.meta.json` naming the agent
+// type and the task it was spawned for.
 function findSubagents(sessionDir) {
   const dir = path.join(sessionDir, 'subagents');
   let files;
@@ -79,10 +76,9 @@ function findSubagents(sessionDir) {
   return agents;
 }
 
-// token-monitor-core's live snapshot, read-only and optional. Supplies the
-// `ended` flag (its PID-registry cross-reference is a far more reliable
-// "this session's cost is final" signal than mtime staleness) plus the
-// auto-generated session name, for sessions currently in the active window.
+// Read-only and optional: the `ended` flag (a PID-registry cross-reference,
+// far more reliable than mtime staleness) and the auto-generated name, for
+// sessions currently in the active window.
 function loadStatus() {
   try {
     const raw = JSON.parse(fs.readFileSync(cfg.STATUS_FILE, 'utf8'));

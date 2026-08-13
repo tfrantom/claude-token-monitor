@@ -6,20 +6,16 @@
 //   status line render  ->  watcher  ->  shared llama-server
 //   last session exits  ->  watcher exits  ->  llama-server stopped
 //
-// Held back from the default `node run-checks.js` run (registered `unsafe`)
-// for two reasons, both about what it touches rather than how long it takes:
-// it really does load a model onto the GPU, and it asserts on the state of
-// the *shared* port 8090, so running it while another session's watcher is up
-// would both disturb that session and fail here for the wrong reason. It
-// refuses to run in that case rather than guessing.
+//   node test-lifecycle.js [--take-over]
 //
-//   node test-lifecycle.js
+// Registered `unsafe` in run-checks.js: it loads a model onto the GPU and
+// asserts on the state of the shared port 8090, so it needs that port to
+// itself and refuses to run when another watcher holds it.
 //
-// Everything else is isolated into a temp dir: its own state dir, its own
-// llama runtime dir, and a fake ~/.claude/sessions registry whose "live
-// session" is a sleeping node process this test owns. That fake registry is
-// the whole reason the idle path is testable at all -- the real one always
-// contains the very session running the test.
+// Everything else is isolated into a temp dir, including a fake
+// ~/.claude/sessions registry whose "live session" is a sleeping node process
+// this test owns. That fake registry is the only reason the idle path is
+// testable -- the real one always contains the session running the test.
 
 const assert = require('assert');
 const fs = require('fs');
@@ -48,20 +44,18 @@ const env = {
 
 const owned = []; // processes this test started, killed on the way out
 
-// The real state dir's pause sentinel (see lib/supervisor.js). Only touched
-// under --take-over, and always removed again in cleanup -- leaving it behind
-// would silently disable the user's status line.
+// The real state dir's pause sentinel. Must always be removed again in
+// cleanup -- leaving it behind silently disables the user's status line.
 const DISABLE_REAL = path.join(CORE, 'state', 'autostart.disabled');
-// The default LLAMA_RUNTIME_DIR from llama-local-server/config.js, recomputed
-// rather than required: requiring that module here would bind it to this
-// process's env, and the test needs to talk about both runtime dirs.
+// The default LLAMA_RUNTIME_DIR, recomputed rather than required: requiring
+// that config would bind it to this process's env, and the test needs to talk
+// about both runtime dirs.
 const REAL_RECORD = path.join(os.homedir(), '.claude', 'llama-local-server', 'chat-shared.json');
 let restoreAutostart = false;
 
-// Stops a llama-server named by one of managed.js's record files, by PID and
-// never by image name -- other instances may belong to other repos. Takes the record
-// path explicitly because this test deals with two of them: the real one
-// (during --take-over) and its own isolated one (during cleanup).
+// By PID, never by image name -- other instances may belong to other repos.
+// The record path is a parameter because this test deals with two: the real
+// one under --take-over, and its own during cleanup.
 function stopRecorded(recordPath) {
   let rec;
   try {
@@ -141,18 +135,16 @@ async function portUp(port = 8090) {
   }
 }
 
-// Counts LISTENING sockets on the port. The "never more than one" assertion
-// has to be made against the OS, not against our own bookkeeping -- our
-// bookkeeping is the thing under test.
+// Against the OS, not our own bookkeeping -- the bookkeeping is what is under
+// test.
 function listenersOn(port) {
   if (process.platform !== 'win32') return null;
   const out = spawnSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8', windowsHide: true }).stdout || '';
   return out.split(/\r?\n/).filter((l) => new RegExp(`:${port}\\s`).test(l) && /LISTENING/i.test(l)).length;
 }
 
-// The PID actually holding the port, per the OS -- the independent check that
-// managed.js's record points at the right process rather than merely at some
-// live process.
+// The PID actually holding the port -- proves a record points at the right
+// process, not merely at some live one.
 function pidFromNetstat(port) {
   if (process.platform !== 'win32') return null;
   const out = spawnSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8', windowsHide: true }).stdout || '';
@@ -173,9 +165,8 @@ function renderStatusline() {
   return (r.stdout || '').trim();
 }
 
-// A stand-in for a live Claude Code session: the registry entry Claude Code
-// writes, pointed at a real process so the watcher's liveness cross-check
-// passes for the right reason.
+// A registry entry pointed at a real process, so the watcher's liveness
+// cross-check passes for the right reason.
 function addFakeSession(id) {
   const proc = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 600000)'], { stdio: 'ignore', windowsHide: true });
   owned.push(proc);
@@ -200,13 +191,10 @@ function check(name, fn) {
 async function main() {
   console.log(`lifecycle integration test (tmp: ${tmp})`);
 
-  // The test needs the shared port to itself, and on any machine actually
-  // using this suite there is a live watcher holding it -- started, moments
-  // ago, by the very status line of the session running this test. Refuse by
-  // default rather than silently killing someone's daemon; --take-over pauses
-  // autostart, stops the running watcher through its own signal handler (so
-  // it takes the llama-server down the documented way), and restores autostart
-  // on the way out.
+  // On any machine using this suite a watcher already holds the port, started
+  // moments ago by the status line of the session running this test. Refuse
+  // rather than silently kill someone's daemon; --take-over does it
+  // deliberately and restores autostart on the way out.
   const takeOver = process.argv.includes('--take-over');
   const running = watcherPidGlobal();
 
@@ -224,14 +212,10 @@ async function main() {
     restoreAutostart = true;
     if (running) {
       console.log(`  ..    pausing autostart and stopping watcher pid ${running}`);
-      // /F is not optional here. Node on Windows never *receives* an external
-      // SIGTERM -- process.kill from another process maps to TerminateProcess,
-      // and taskkill without /F posts WM_CLOSE, which a console process with no
-      // window ignores. So a watcher's SIGINT/SIGTERM handler only ever runs
-      // for Ctrl+C in its own console; an external stop is always abrupt, and
-      // the server it managed has to be stopped separately. That is exactly
-      // why ownership is recorded on disk instead of held in a variable: the
-      // record outlives the abrupt exit, and the next watcher adopts it.
+      // /F is not optional, and the stopRecorded() below is not redundant: an
+      // external kill on Windows never runs the watcher's signal handlers, so
+      // its llama-server has to be stopped separately. See the suite CLAUDE.md
+      // "An external kill on Windows is always abrupt".
       spawnSync('taskkill', ['/PID', String(running), '/F'], { windowsHide: true });
       await until('existing watcher to exit', () => !isPidAlive(running), 30_000);
     }
@@ -258,9 +242,8 @@ async function main() {
   });
 
   await check('the shared instance is recorded as managed', async () => {
-    // Deliberately polled rather than read once: ensureRunning() resolves the
-    // instant /health answers, and the record is written just after, so the
-    // previous check can pass microseconds before this file exists.
+    // Polled, not read once: the record is written just after /health starts
+    // answering, so the previous check can pass before this file exists.
     const recPath = path.join(runtimeDir, 'chat-shared.json');
     await until('managed record', () => fs.existsSync(recPath), 15_000);
     const rec = JSON.parse(fs.readFileSync(recPath, 'utf8'));
@@ -277,12 +260,9 @@ async function main() {
   });
 
   await check('the watcher restarts the server if it dies underneath it', async () => {
-    // The regression this locks down: ensureShared() used to run once at
-    // watcher startup and never again, so killing llama-server left the
-    // watcher polling forever against a dead backend. Nothing looked wrong --
-    // status.json kept updating and the status line kept rendering -- but
-    // session naming and semantic classification failed silently on every
-    // tick, because both are written to tolerate a null from the model.
+    // Guards the ensure-every-tick rule -- see CLAUDE.md. Ensure-once fails
+    // this silently: everything still renders, only naming and classification
+    // stop working.
     const before = pidFromNetstat(8090);
     assert.ok(before, 'no server to kill');
     spawnSync('taskkill', ['/PID', String(before), '/F'], { windowsHide: true });
@@ -294,8 +274,7 @@ async function main() {
     assert.ok(after && after !== before, `expected a new pid, got ${after} (was ${before})`);
     assert.strictEqual(listenersOn(8090), 1, 'restart produced more than one listener');
 
-    // And the record must follow the new process, or the eventual shutdown
-    // would signal a pid that no longer exists.
+    // The record must follow the new process, or shutdown signals a dead pid.
     await until('record to name the new pid', () => {
       try {
         return JSON.parse(fs.readFileSync(path.join(runtimeDir, 'chat-shared.json'), 'utf8')).pid === after;
@@ -306,11 +285,8 @@ async function main() {
   });
 
   await check('an idle dedicated instance is reaped, a supervised one is not', async () => {
-    // No second model is loaded here -- that would cost 6.4 GB and a minute to
-    // prove a bookkeeping rule. A record naming a live process this test owns
-    // is enough to exercise the decision, and the accompanying assertion is
-    // the one that actually matters: the reaper must not touch the shared
-    // instance no matter how long it has sat idle.
+    // A record naming any live process exercises the decision; loading a
+    // second model to prove a bookkeeping rule would cost 6.4 GB.
     const sleeper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 600000)'], {
       stdio: 'ignore',
       windowsHide: true,
@@ -330,14 +306,13 @@ async function main() {
       })
     );
 
-    // The watcher reaps on every tick.
     await until(
       'idle record to be dealt with',
       () => !fs.existsSync(path.join(runtimeDir, 'test-idle-instance.json')),
       30_000
     );
-    // It is not the port holder, so the kill is correctly vetoed -- the record
-    // is cleared, the innocent process lives. Both halves of the contract.
+    // The sleeper does not hold the port, so the kill must be vetoed: record
+    // cleared, innocent process alive. Both halves of the contract.
     assert.ok(isPidAlive(sleeper.pid), 'reaper killed a process that did not hold the port');
     assert.ok(await portUp(), 'reaper took down the supervised shared instance');
   });

@@ -3,20 +3,20 @@
   Repeatable smoke test for ask-question-prefilter.ps1. Never shows a popup.
 
 .DESCRIPTION
-  Judgment cases run with -DryRun (prints the verdict as JSON, calls nothing downstream).
-  Forwarding cases run for real but against scripts/stub-ask-question.ps1 via
-  -AskQuestionPath, so the "ask" path is exercised end to end -- argument forwarding,
-  stdout passthrough -- without a popup or TTS.
+  Judgment cases run with -DryRun (verdict as JSON, nothing called downstream).
+  Forwarding cases run for real against scripts/stub-ask-question.ps1 via
+  -AskQuestionPath, exercising argument forwarding and stdout passthrough without a
+  popup or TTS.
 
-  Requires packages/llama-local-server's chat server to already be up on 127.0.0.1:8090
-  for the model-reachable cases. It deliberately does not start it (same fail-open
-  philosophy as the script under test): if model_reachable comes back false, start it with
-  `node packages/token-monitor-core/watcher.js` or launch llama-server.exe directly.
-  The final case verifies the fail-open path on purpose, by pointing at a dead port.
+  Requires the chat server already up on 127.0.0.1:8090; it deliberately does not start
+  it, the same fail-open philosophy as the script under test. If model_reachable comes
+  back false, start `node packages/token-monitor-core/watcher.js`. The final case points
+  at a dead port on purpose, to verify the fail-open path.
 
-  Not a strict pass/fail harness -- a 3B model's exact wording isn't worth pinning down
-  that tightly. Each case prints an expectation next to its actual result for a human to
-  eyeball.
+  NOT a pass/fail harness -- it asserts nothing and exits 0 regardless. A 3B model's
+  exact wording isn't worth pinning down, so each case prints an expectation next to its
+  actual result for a human to eyeball. That, plus the blocking popup one flag away, is
+  why run-checks.js holds it back from unattended runs.
 #>
 
 $ErrorActionPreference = "Stop"

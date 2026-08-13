@@ -2,12 +2,9 @@
 
 const { BASE_URL } = require('../../llama-local-server/server');
 
-// Closed label vocabulary per lesson-sessions/token-classifier-demo/PLAN.md
-// §1: thinking blocks get a quality verdict + productive fraction; tool_use
-// blocks get a purpose tag. Every block gets every field (with "na"/0 filler
-// on the fields that don't apply to its type) so the response schema stays
-// flat — a discriminated union is harder for grammar-constrained decoding to
-// get right than one uniform object shape.
+// Every block carries every field, with "na"/0 filler where a field does not
+// apply to its type: one flat shape is easier for grammar-constrained decoding
+// to get right than a discriminated union.
 const SYSTEM_PROMPT = `You classify blocks from an AI coding assistant's turn. For each block, judge it against the kind it actually is — thinking or tool_use — and fill in every field of the response:
 
 - thinking blocks: set "verdict" to one of productive (tight, on-task reasoning), restating (re-summarizing already-known context with no new reasoning), backtracking (reconsidering one earlier decision for a good reason), or looping (repeating the same unresolved point without making progress). Set "productive_fraction" to how much of the block (0 to 1) was productive reasoning vs. waste. Leave "purpose" as "na".
@@ -50,11 +47,10 @@ function buildUserMessage(blocks) {
   return blocks.map((b) => `[${b.index}:${b.type}] ${truncate(b.text, MAX_BLOCK_CHARS)}`).join('\n\n');
 }
 
-// One batched round trip per turn — a turn's blocks share context (e.g. a
-// third tool call is only visibly redundant next to the first one), and
-// batching keeps wall-clock cost sane for multi-block turns. Returns a map
-// keyed by block index, or null on any failure (caller just leaves those
-// blocks unclassified and retries them next tick).
+// One batched round trip per turn, because a turn's blocks share context -- a
+// third tool call is only visibly redundant next to the first. Returns a map
+// keyed by block index, or null on any failure; the caller leaves those blocks
+// unclassified and retries later.
 async function classifyTurn(turn) {
   const blocks = turn.blocks.slice(0, MAX_BLOCKS_PER_REQUEST);
   if (blocks.length === 0) return null;

@@ -236,11 +236,28 @@ another repo is using.
 
 ## Conventions
 
-- Comments explain *why*, especially when the code looks wrong but isn't. The
-  measured dead ends in this codebase are documented on purpose; deleting one
-  costs the next person the measurement. If you disprove one, replace it with
-  what you measured — don't just remove it.
-- Correct a README in place as you learn things rather than leaving it stale.
-- Prefer measuring to guessing. Transcript parsing was nearly "optimized" with
-  an mtime cache before anyone timed it: it is 8ms per tick against the active
-  set, on a 5-second loop.
+**Write as few comments as possible.** The best comment is the one that doesn't
+need to exist; usually the fix is a better name or a smaller function. A
+comment earns its place only if a competent reader would be *wrong* without it
+— a non-obvious why, a trap with teeth, a contract the signature can't express.
+Keep those to a line or two.
+
+Delete on sight: restatements of the code, history ("this used to be X"), the
+bug that was live the day it was written, measurements written up inline, and
+commented-out code. Scaffolding comments are fine while building and should be
+stripped before the code is shared.
+
+**But never delete the knowledge — move it.** A measured finding or a
+documented dead end is expensive to re-derive, and losing one is worse than an
+over-commented file. It belongs in a `CLAUDE.md` — this file for suite-wide
+rules, the package's own for local ones. Where the code still looks wrong
+without context, leave a pointer rather than the story:
+`// see CLAUDE.md "Ports are hand-claimed"`. If you disprove a finding, replace
+it with what you measured.
+
+READMEs describe what exists and how to use it, not the journey to it. Status
+commentary, escalations, and "it turned out that…" belong here instead.
+
+Prefer measuring to guessing. Transcript parsing was nearly "optimized" with an
+mtime cache before anyone timed it: it is 8ms per tick against the active set,
+on a 5-second loop.

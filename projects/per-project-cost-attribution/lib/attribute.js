@@ -4,24 +4,14 @@ const fs = require('fs');
 const path = require('path');
 const { resolveProject } = require('./project-map');
 
-// Pricing is the one piece deliberately NOT re-implemented here: a second
-// copy of the rate table is a silent-drift bug waiting to happen. It is
-// required read-only from token-monitor-core and never written to. If this
-// project is ever extracted, vendoring lib/pricing.js is a file copy.
+// Read-only, and deliberately not re-implemented: a second copy of the rate
+// table is a silent-drift bug waiting to happen.
 const { costForTurn } = require('../../../packages/token-monitor-core/lib/pricing');
 
-// ---------------------------------------------------------------------------
-// Independent transcript parse.
-//
-// This intentionally does NOT call token-monitor-core's classifySession():
-// that function throws away the per-entry `cwd` this whole project is built
-// on, and packages/ is read-only from here. The accounting below mirrors
-// lib/transcript.js turn-for-turn (same usage-once-per-message.id rule, same
-// inter-block wall-clock proration, same fallbacks) specifically so that the
-// per-cwd slices produced here sum back to exactly the session totals
-// status.json already reports -- verify.js asserts that equality against the
-// real classifySession() output.
-// ---------------------------------------------------------------------------
+// Independent transcript parse. classifySession() can't be used -- it throws
+// away the per-entry `cwd` this project is built on -- so the accounting below
+// mirrors lib/transcript.js turn-for-turn instead, and verify.js asserts the
+// two agree over every real transcript.
 
 const TOTALS_KEYS = [
   'context', 'cache_write', 'cache_read',
@@ -68,22 +58,17 @@ function timeDeltaWeights(turn) {
   return weights;
 }
 
-// Returns this single turn's totals, in the same shape as the session-wide
-// ones. Attribution happens by adding this into whichever cwd bucket the
-// turn belongs to instead of into one global accumulator.
+// One turn's totals, in the same shape as the session-wide ones, so
+// attribution is just adding them into the right cwd bucket.
 function totalsForTurn(turn) {
   const totals = emptyTotals();
   const u = turn.usage;
   if (!u) return totals;
 
   const cacheCreation = u.cache_creation || {};
-  // This is the suite's SECOND costForTurn() call site (the first is
-  // finalizeTurn in token-monitor-core/lib/transcript.js). Both must feed it
-  // the same inputs or the two disagree -- `speed` and `at_ms` are not
-  // optional niceties: omitting `speed` under-reports a fast-mode turn by
-  // half, and omitting `at_ms` skips any dated rate window entirely. That
-  // exact drift is what verify.js's reconciliation check exists to catch, so
-  // if you add an input there, add it here too.
+  // The suite's SECOND costForTurn() call site; the first is finalizeTurn in
+  // token-monitor-core/lib/transcript.js. Add an input there and you must add
+  // it here too -- see the suite CLAUDE.md, "Cost is computed in two places".
   const priced = costForTurn({
     model: turn.model,
     speed: u.speed,
@@ -143,16 +128,12 @@ function touchSlice(slice, turn, totals) {
   }
 }
 
-// Parses one transcript file into per-cwd slices.
-//
-// `agent` identifies which transcript this is within a session: the main
-// one, or one of the sidechain transcripts under
+// Parses one transcript file into per-cwd slices. `agent` says which
+// transcript this is within a session: the main one, or a sidechain under
 // `<session-id>/subagents/agent-*.jsonl`. Subagent turns are real API calls
-// with their own `usage` and their own `cwd`, recorded nowhere in the parent
-// transcript -- token-monitor-core's watcher never opens those files, so its
-// per-session cost is main-transcript-only. Attribution counts them, tagged,
-// because a Task-heavy session can spend most of its money in a cwd the main
-// transcript never visits.
+// with their own `usage` and `cwd`, recorded nowhere in the parent, and a
+// Task-heavy session can spend most of its money in a cwd the main transcript
+// never visits.
 function parseTranscript(transcriptPath, agent = { agent: 'main', agent_type: null, agent_description: null }) {
   let raw;
   try {
@@ -167,9 +148,10 @@ function parseTranscript(transcriptPath, agent = { agent: 'main', agent_type: nu
   let turnCount = 0;
   let firstActivity = null;
   let lastTimestamp = null;
-  // Per-turn cwd stability instrumentation -- the open question from the
-  // brief. Counts turns (message.id groups) whose JSONL lines disagreed
-  // about cwd, and the total number of cwd changes across the session.
+  // Instrumentation: turns (message.id groups) whose JSONL lines disagreed
+  // about cwd, and the total cwd changes across the session. verify.js prints
+  // both, so a future Claude Code that stops stamping cwd per turn shows up
+  // rather than silently mis-attributing.
   let turnsWithCwdConflict = 0;
   let cwdTransitions = 0;
   let prevEntryCwd = null;
@@ -218,10 +200,9 @@ function parseTranscript(transcriptPath, agent = { agent: 'main', agent_type: nu
           usage: entry.message.usage,
           startTs: prevTimestamp,
           endTs: entry.timestamp || null,
-          // The turn's cwd is pinned by its FIRST line. Later lines of the
-          // same message.id are only checked for disagreement (see below);
-          // they never re-point the turn, so a turn is always attributed
-          // whole and slices can never double-count it.
+          // Pinned by the turn's FIRST line. Later lines of the same
+          // message.id are only checked for disagreement, never allowed to
+          // re-point it, so slices can never double-count a turn.
           cwd: entry.cwd || lastSeenCwd || null,
           blocks: [],
         };
@@ -256,12 +237,9 @@ function parseTranscript(transcriptPath, agent = { agent: 'main', agent_type: nu
   };
 }
 
-// Groups a parse's per-cwd slices into per-project buckets, keeping the
-// per-cwd detail nested underneath as `paths[]`.
-// `parses` is the session's main transcript plus each of its subagent
-// transcripts -- one session, several files. Totals are summed across all of
-// them, so a session's cost here is legitimately higher than the same
-// session's cost in status.json, which only ever sees the main file.
+// Groups per-cwd slices into per-project buckets, keeping the per-cwd detail
+// nested underneath as `paths[]`. `parses` is the session's main transcript
+// plus each of its subagent transcripts, summed.
 function attributeSession(parses, extra = {}) {
   const list = Array.isArray(parses) ? parses : [parses];
   const projects = new Map();
@@ -343,9 +321,8 @@ function attributeSession(parses, extra = {}) {
     models: [...models],
     turns,
     totals,
-    // Main-transcript-only totals, i.e. the number status.json reports for
-    // this session. Kept so the two are directly comparable instead of
-    // looking like a discrepancy.
+    // Main-transcript-only, so a parse discrepancy is distinguishable from a
+    // genuine subagent difference.
     main_totals: main.totals,
     cwd_stability: {
       distinct_cwds: new Set(allSlices.map((s) => s.cwd).filter(Boolean)).size,

@@ -1,16 +1,14 @@
 #!/usr/bin/env node
 'use strict';
 
-// Smoke test for the three delegation scripts. Not installed into
-// ~/.claude/skills/ -- this is a maintenance tool for the source tree.
+// Smoke test for the three delegation scripts. Not installed.
 //
 //   node selftest.js              # test the scripts in ./scripts/
 //   node selftest.js --installed  # test the copies in ~/.claude/skills/
 //
-// Checks the plumbing (input parsing, ensureRunning, schema round-trip,
-// exit codes), not the model's intelligence -- the assertions are
-// deliberately loose enough that a 3B model passes them reliably. A failure
-// here means something is actually broken, not that the model had an off day.
+// Checks plumbing -- input parsing, ensureRunning, schema round-trip, exit
+// codes -- not the model's intelligence. Assertions are loose enough that a
+// 3B model passes reliably, so a failure means something is actually broken.
 
 const os = require('os');
 const path = require('path');
@@ -84,8 +82,8 @@ function main() {
   check('rejects out-of-range max_words with exit 1', r.code === 1, `${r.code} ${r.err}`);
 
   console.log('\nfallback (server unreachable)');
-  // Point at a dead port with a bogus exe: ensureRunning() must fail fast on
-  // the spawn error rather than eating its whole 30s health-check timeout.
+  // Dead port plus a bogus exe: ensureRunning() must fail fast on the spawn
+  // error rather than eating its whole 30s health-check timeout.
   const started = Date.now();
   r = run('classify.js', { text: 'x', labels: ['a', 'b'] }, { LLAMA_PORT: '8099', LLAMA_SERVER_EXE: 'C:\\nope\\does-not-exist.exe' });
   const elapsed = Date.now() - started;

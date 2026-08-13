@@ -1,8 +1,7 @@
 'use strict';
 
-// Offline checks for the parts that must not be wrong: the tier math, the
-// dedup/re-notify gate, and graceful handling of a missing or mid-write
-// status.json. Fires no real notifications and needs no running watcher.
+// Offline checks: tier math, the dedup gate, -File quote safety, and a
+// missing or mid-write status.json. Fires no notifications, needs no watcher.
 //
 //   node test.js
 
@@ -33,9 +32,8 @@ check('same tier again stays silent', shouldNotify(10, { tier: 10 }), false);
 check('higher tier fires again', shouldNotify(25, { tier: 10 }), true);
 check('lower tier than already notified stays silent', shouldNotify(10, { tier: 50 }), false);
 
-// The actual spam scenario: cost climbs, then sits still for many ticks.
-// Exactly two alerts should come out of this -- one per tier genuinely
-// crossed -- not one per tick.
+// Cost climbs, then sits still for many ticks: one alert per tier genuinely
+// crossed, not one per tick.
 const costSequence = [
   0, 5, 9.99,                 // below any tier
   10.01, 11, 14, 18, 22, 24,  // crossed $10, then drifts under $25
@@ -52,8 +50,8 @@ for (const cost of costSequence) {
 }
 check('15 ticks spanning two crossings -> exactly 2 alerts', fired, [10, 25]);
 
-// A single tick that leaps several tiers should produce one alert naming the
-// highest tier reached, not one per skipped tier.
+// A tick that leaps several tiers produces one alert naming the highest tier
+// reached, not one per skipped tier.
 let jumpEntry;
 const jumpFired = [];
 for (const cost of [8, 60]) {

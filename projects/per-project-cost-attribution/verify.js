@@ -1,21 +1,18 @@
 'use strict';
 
-// Verification harness. Run against the real transcripts on this machine:
+// Verification harness, run against the real transcripts on this machine:
 //
 //   node verify.js            all transcripts
 //   node verify.js --since 7d recent ones only
 //
-// Three things it proves, in order of how badly a regression would hurt:
-//
-//  1. RECONCILIATION -- for every main transcript, this project's
-//     independent parse produces byte-for-byte the same totals as
-//     token-monitor-core's classifySession(). packages/ is read-only from
-//     here, so the only defence against the two parsers drifting apart is
-//     asserting they agree, against real data, on demand.
-//  2. CONSERVATION -- the per-cwd slices sum back to the session total.
-//     Attribution must be a partition of the cost, never a re-estimate.
-//  3. CWD STABILITY -- the open question from the project brief: is `cwd`
-//     stable within a single turn, or can it vary line-to-line?
+// Proves three things, worst regression first:
+//  1. RECONCILIATION -- this project's independent parse agrees with
+//     token-monitor-core's classifySession(), key by key. packages/ is
+//     read-only from here, so asserting agreement on demand is the only
+//     defence against the two parsers drifting apart.
+//  2. CONSERVATION -- per-cwd slices sum back to the session total.
+//     Attribution is a partition of the cost, never a re-estimate.
+//  3. CWD STABILITY -- re-measures the per-turn cwd conflict count.
 
 const path = require('path');
 const { parseTranscript, attributeSession, TOTALS_KEYS } = require('./lib/attribute');
@@ -23,7 +20,7 @@ const { findTranscripts, loadStatus, sessionMeta } = require('./lib/sources');
 const { resolveProject } = require('./lib/project-map');
 const { toSliceRows, sumTotals } = require('./lib/report');
 
-// Read-only reference use: the thing being reconciled against.
+// Read-only: the thing being reconciled against.
 const { classifySession } = require('../../packages/token-monitor-core/lib/transcript');
 
 const EPS = 1e-9;
@@ -60,10 +57,9 @@ function main() {
   const status = loadStatus();
   const files = findTranscripts({ since });
   if (files.length === 0) {
-    // Exit 3, not 1: run-checks.js reads that as SKIP. Nothing to reconcile is
-    // not the same as a reconciliation that disagreed, and on a fresh clone --
-    // or a CI runner, which has no ~/.claude/projects at all -- this is the
-    // normal state, not a regression.
+    // Exit 3, not 1: run-checks.js reads that as SKIP. Nothing to reconcile
+    // is not the same as a reconciliation that disagreed, and on a fresh
+    // clone or a CI runner it is the normal state.
     console.log('no transcripts found -- nothing to verify');
     process.exit(3);
   }

@@ -1,19 +1,16 @@
 #!/usr/bin/env node
 'use strict';
 
-// summarize.js -- a short, plain-text summary of a block of text (a file's
-// contents, a log excerpt, a paragraph). Not for anything where nuance,
-// correctness, or completeness matters -- see SKILL.md for scope.
+// summarize.js -- a short, plain-text summary of a block of text. Not for
+// anything where nuance, correctness, or completeness matters; see SKILL.md.
 //
 // Input: one JSON object, via `--in <file.json>` (preferred) or on stdin:
-//   { "text": "...", "max_words": 40 }
-// "max_words" is optional, default 40.
+//   { "text": "...", "max_words": 40 }   // max_words optional, default 40
 //
-// Output (stdout): the summary, plain text, no markdown, no preamble.
+// Output: the summary, plain text, no markdown, no preamble.
 //
-// Exit codes: 0 = usable summary on stdout. 1 = delegation failed entirely
-// (bad input, server unavailable, unusable/empty model response) -- message
-// on stderr, do the summary yourself instead of retrying this script.
+// Exit 1 means delegation failed (bad input, server unavailable, unusable
+// response) -- write the summary yourself rather than retrying.
 
 const { ensureRunning, chatText, truncate, readInputJSON, failAndExit } = require('./lib/local-client');
 
@@ -55,7 +52,7 @@ async function main() {
   }
 
   const userContent = truncate(parsed.text, MAX_TEXT_CHARS);
-  // ~1.4 tokens/word is generous headroom for the model's own wordiness.
+  // Generous headroom for the model's own wordiness.
   const maxTokens = Math.min(400, Math.ceil(parsed.maxWords * 2.2));
   const summary = await chatText(systemPrompt(parsed.maxWords), userContent, { maxTokens, temperature: 0.3 });
   if (!summary) {

@@ -37,6 +37,11 @@ independently before it was fixed. The handler captures it so the health loop
 can fail fast (~0.5s) with a clean message naming the path, rather than sitting
 through the timeout waiting for a process that never started. Keep it.
 
+Relatedly, `detached: true` can *silently fail to launch* on Windows — you get
+a handle and no process. So a detached spawn is verified rather than assumed:
+`ensureRunning()` only returns once `/health` answers. Do not shortcut that to
+"we got a pid back".
+
 ## For the shared instance, use `managed.js` — not `ensureRunning` directly
 
 `ensureRunning`'s `owned` flag is a **per-process** contract: the child handle
@@ -90,6 +95,20 @@ Rules that fall out of it, none of them optional:
 
 The spawn itself is serialised behind a lock, because `isUp()`-then-spawn is
 not atomic and two sessions opened in the same second both see an empty port.
+The loser waits for the winner's server rather than racing it into a bind
+failure. The staleness ceiling on that lock is deliberately generous: a spawn
+holds it while llama.cpp loads the model, measured at ~4s cold for a 3B Q4 and
+over a minute for a 7B on a cold file cache. Too short means two processes
+spawn; too long only delays startup once, after a crashed spawner.
+
+## An external kill here is always abrupt
+
+Node on Windows never *receives* an external SIGTERM, and `taskkill` without
+`/F` posts `WM_CLOSE`, which a console process ignores — see the suite
+[CLAUDE.md](../../CLAUDE.md) "An external kill on Windows is always abrupt".
+Nothing in this package may depend on cleanup running at exit: everything it
+needs after a hard kill has to be reconstructable from the records on disk,
+which is what they are for.
 
 ## Ports are hand-claimed, and killing is by PID
 
@@ -99,9 +118,17 @@ instance spawned `detached: true` stays resident until an explicit kill, and an
 embedding server plus a 7B chat instance coexist with the shared 3B inside
 16 GB of VRAM; a fourth needs a VRAM policy, not just a port.
 
+Claims are declarative and validated **at require time**, so two claims on one
+port throw when the file loads rather than failing at spawn. One claim today
+and the registry still earns its keep: other tools on this machine routinely
+hold neighbouring ports, which is why `suggestPort()` probes TCP before
+suggesting anything, and why `assertAvailable()` names an occupant instead of
+letting `llama-server` fail to bind.
+
 **Never `taskkill` by image name.** There are routinely several
 `llama-server.exe` processes and some belong to other sessions. Kill by PID or
-by port.
+by port — `/PID`, never `/IM`, and never `/T` (llama-server has no children to
+reap, and a tree kill is how you take out a bystander).
 
 ## Machine-specific config is resolved
 
@@ -124,11 +151,11 @@ number, and must not explode on a machine with no llama.cpp installed.
 ## Tests
 
 ```sh
-node test.js     # 21 offline checks, no server, no network
+node test.js     # 33 offline checks, no server, no network
 ```
 
 Covers the code that decides whether to start or kill a process: netstat
 parsing, the ownership record, `stopShared`'s three refusals, spawn-lock
-staleness, and manifest resolution. The end-to-end proof that the chain really
+staleness, the two reap policies, and manifest resolution. The end-to-end proof that the chain really
 starts and stops a server is `../token-monitor-core/test-lifecycle.js`, which
 needs the GPU and the shared port and is held back from the default run.

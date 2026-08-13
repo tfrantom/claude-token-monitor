@@ -4,15 +4,14 @@ local format = require("claude-token-monitor.format")
 
 local M = {}
 
--- Cache written by the timer, read by the (frequently-called) statusline
--- functions -- those must never touch disk directly, since Neovim redraws
--- the statusline far more often than the underlying data actually changes.
+-- Written by the timer, read by the statusline functions: those run on every
+-- redraw and must never touch disk.
 local cache = { statusline = "", plain = "", selection = { active = nil, others = {} } }
 
 local timer = nil
-local last_position = nil -- tracks which bar (if any) we last wrote to, so
--- switching position on a later setup() call clears only the bar we own
--- instead of stomping on something the user configured separately.
+-- Which bar we last wrote, so a later setup() with a different position
+-- clears only ours.
+local last_position = nil
 
 local SEGMENT_EXPR = "%{%v:lua.require('claude-token-monitor').get_statusline()%}"
 
@@ -24,19 +23,16 @@ local function apply_position(position)
   if position == "winbar" then
     vim.o.winbar = SEGMENT_EXPR
   else
-    -- laststatus=2 guarantees the statusline actually renders with a single
-    -- window open; cheap insurance rather than relying on Neovim's default.
+    -- laststatus=2 so the statusline still renders with a single window open.
     vim.o.laststatus = 2
-    -- Keep the filename/position info Neovim's built-in ruler normally
-    -- shows -- moving the monitor to the bottom shouldn't cost you that.
     vim.o.statusline = "%f %h%m%r%=" .. SEGMENT_EXPR .. "  %l:%c %p%%"
   end
   last_position = position
 end
 
+-- default = true and links, never literal colors: the user's colorscheme
+-- must stay in charge of the palette.
 local function define_highlights(hl)
-  -- link, don't hardcode colors, so the active theme (rose-pine etc.) still
-  -- governs the actual palette; these are just sane fallbacks.
   vim.api.nvim_set_hl(0, hl.active_name, { link = "Title", default = true })
   vim.api.nvim_set_hl(0, hl.active_cost, { link = "Number", default = true })
   vim.api.nvim_set_hl(0, hl.dim, { link = "Comment", default = true })
@@ -57,8 +53,7 @@ function M.get_statusline()
   return cache.statusline
 end
 
---- For anything that wants plain text with no inline highlight codes
---- (lualine components, a manually-styled winbar, etc).
+--- Plain text, no inline highlight codes.
 function M.get_plain()
   return cache.plain
 end

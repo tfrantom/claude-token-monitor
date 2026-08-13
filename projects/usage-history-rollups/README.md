@@ -6,9 +6,6 @@ overwritten every watcher tick with only currently-active sessions
 gone. This appends per-session snapshots to `state/history.jsonl` so "how
 much this week" is answerable, not just "right now."
 
-**Status: built and working.** Everything below describes what exists, not a
-plan.
-
 ## Running it
 
 ```sh
@@ -31,28 +28,17 @@ running it while the watcher is down are all fine (it just records less).
 | `state/history.jsonl` | The append-only log. |
 | `state/last-seen.json` | Per-session bookkeeping carried across polls, so a poller restart doesn't lose in-flight state or duplicate finals. |
 
-### It does not touch `packages/`
+It reads `packages/token-monitor-core/state/status.json` **by path** — the same
+arms-length way `statusline.js` and the nvim plugin consume it. No `require()`
+crosses the package boundary.
 
-This project reads `packages/token-monitor-core/state/status.json` **by path**
-— the same arms-length way `statusline.js` and the nvim plugin consume it. No
-`require()` crosses the package boundary and nothing under `packages/` was
-modified. `watcher.js` needed no hook; see below.
+## When it snapshots
 
-## Resolved: when to snapshot
-
-The original brief proposed diffing consecutive ticks' session sets to
-synthesize a "session ended" signal, and flagged that as needing a hook inside
-`watcher.js`'s tick loop. **Neither turned out to be necessary.**
-
-The watcher now publishes `ended: true` per session, derived from
-cross-checking Claude Code's own `~/.claude/sessions/<pid>.json` registry
-against live PIDs, and deliberately keeps ended sessions in `status.json` for
-the rest of the 30-minute window so consumers can see the transition. That is
-strictly better than tick-diffing: it's a true "the user closed this session"
-edge rather than "the transcript went quiet," and because the ended state
-*persists* for 30 minutes, catching it doesn't require having observed the
-immediately preceding tick. An external poller on its own cadence is
-therefore sufficient — the signal is a level, not an edge.
+The watcher publishes `ended: true` per session, derived from cross-checking
+Claude Code's own `~/.claude/sessions/<pid>.json` registry against live PIDs,
+and keeps ended sessions in `status.json` for the rest of the 30-minute window.
+The signal is a level rather than an edge, so a poller on its own cadence does
+not need to have observed the immediately preceding tick.
 
 Three snapshot triggers, in order of importance:
 
@@ -67,12 +53,10 @@ and never re-written while it lingers in the window.
 
 ### Why the confirmation threshold
 
-`token-monitor-core`'s own README documents one mass-false-positive mode: if
-`~/.claude/sessions/` is missing or unreadable, `loadLiveSessionIds()` returns
-an empty set and **every** session reads as ended at once. Requiring the
-signal to persist across two polls costs one extra poll of latency against a
-30-minute window — free — and turns a transient filesystem hiccup from "bogus
-final snapshots for every live session" into a no-op.
+If `~/.claude/sessions/` is missing or unreadable, `loadLiveSessionIds()`
+returns an empty set and **every** session reads as ended at once. Requiring
+the signal to persist across two polls costs one extra poll of latency against
+a 30-minute window and turns that hiccup into a no-op.
 
 ### Robustness
 
@@ -111,19 +95,15 @@ One JSON object per line in `state/history.jsonl`:
 }
 ```
 
-`totals` and `semantic` are passed through verbatim from `status.json`, which
-is `lib/transcript.js`'s existing shape — deliberately not re-invented, so
-anything that already renders a session's totals renders a history entry's
-totals too.
+`totals` and `semantic` are passed through verbatim from `status.json`, so
+anything that renders a session's totals renders a history entry's totals too.
 
 > **Discontinuity to know about:** as of 2026-08-06 the watcher folds
 > **subagent (Task) transcripts** into each session's totals — previously
-> missing entirely, worth roughly **+18%**. Lines written before that change
-> are cumulative totals on the old (main-transcript-only) basis; lines after
-> are on the new one. Within a single session the differencing in `report.js`
-> can therefore show one artificially large delta at the changeover. There's
-> no `v` bump because the schema didn't change, only the upstream numbers.
-> Sessions carry an `agents` array now too; the poller doesn't record it.
+> missing entirely, worth roughly **+18%**. Lines written before that date are
+> on the old main-transcript-only basis, so `report.js` can show one
+> artificially large delta at the changeover. No `v` bump: the schema didn't
+> change, only the upstream numbers.
 
 ### ⚠ Entries are cumulative, not deltas
 
@@ -136,20 +116,12 @@ use it rather than re-deriving this.
 
 ### Fitting `per-project-cost-attribution`
 
-The sibling project adds a finer repo/cwd dimension (from the per-entry `cwd`
-already in the transcript) alongside the coarse `project` field. The join
-point is `by_project`, currently always `null` because `status.json` carries
-no such breakdown yet.
-
-The two dimensions compose rather than collide: **time** is one line per
-snapshot, **project** is a nested object inside the line. When that project
-lands a breakdown on the session object in `status.json`, it flows into
-history automatically — no change to `poller.js`, no `v` bump, and no
-reprocessing of already-written lines (older lines carry `null`, which is a
-valid value for the field rather than a schema break). Deliberately nested
-rather than extra top-level keys, so adding a third dimension later doesn't
-fight over the same namespace. A per-day-per-repo rollup is then just a
-group-by over `(ts` bucket`, by_project` key`)` on differenced entries.
+`by_project` is the join point with the sibling project's finer repo/cwd
+dimension, and is `null` until `status.json` carries such a breakdown. The two
+dimensions compose rather than collide: **time** is one line per snapshot,
+**project** is a nested object inside the line. A breakdown appearing on the
+session object flows into history with no change to `poller.js` and no `v`
+bump, since `null` is a valid value for the field rather than a schema break.
 
 ## Retention
 
@@ -174,22 +146,6 @@ is a housekeeping nicety, not a pressing need.
 confirm threshold, dedup, the vanished fallback, all three unreadable-file
 cases, resume/re-finalize, periodic sampling, delta differencing, and
 compaction-preserves-totals.
-
-Also verified against live data, not just fixtures:
-
-- Run against the real `status.json`, which had 3 ended and 3 live sessions:
-  wrote exactly 3 `ended` entries at their real costs ($0.62 / $6.18 / $0.38),
-  skipped the 3 live ones, and after **19** further confirming polls still had
-  exactly 3 lines — no duplicates.
-- A real live→ended transition, replayed against a captured real
-  `status.json` with one live session flipped: two live polls wrote nothing,
-  the first ended sighting wrote nothing (threshold), the second wrote exactly
-  one entry, two further polls wrote nothing.
-- `periodic` at a shortened interval against real live sessions: sampled only
-  the 3 live sessions, never the finalized ones.
-- The cumulative-vs-delta trap, on real data: 5 real snapshots of this suite's
-  own session at a cumulative $80.98 each reported as **$80.98** total, not
-  $404.91.
 
 ## Notes / limits
 

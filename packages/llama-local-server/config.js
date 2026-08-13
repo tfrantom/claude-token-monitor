@@ -1,21 +1,8 @@
 'use strict';
 
-// Where the llama.cpp binary and the GGUF actually live is the only genuinely
-// machine-specific thing in this suite, and it used to be two hardcoded
-// absolute paths from the machine this was built on -- including a bare
-// sha256 blob digest. Both are now *resolved*, in this order:
-//
-//   1. an environment variable            (LLAMA_SERVER_EXE, LLAMA_MODEL_PATH)
-//   2. ./config.local.js                  (gitignored; survives a git pull)
-//   3. discovery                          (see below)
-//
-// Discovery is what makes a fresh clone run with no configuration at all on
-// the common setup, and every layer above it exists so that an uncommon one
-// never needs a source edit. Nothing here throws on failure: a missing binary
-// must surface at spawn time with a message naming the path, not at require
-// time in an unrelated consumer -- `ports.js` requires this file purely to
-// read a port number, and it should not explode on a machine with no
-// llama.cpp installed.
+// Resolution order for both machine-specific values: env var ->
+// ./config.local.js (gitignored) -> discovery. Nothing here throws when
+// resolution fails -- see CLAUDE.md "Machine-specific config is resolved".
 
 const fs = require('fs');
 const os = require('os');
@@ -23,7 +10,6 @@ const path = require('path');
 
 const HOME = os.homedir();
 
-// Optional, gitignored, and entirely absent on a normal install.
 function loadLocalOverrides() {
   try {
     return require('./config.local.js') || {};
@@ -51,7 +37,7 @@ function firstExistingFile(candidates) {
 
 const EXE = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
 
-// The layouts a llama.cpp build actually produces. CMake on Windows puts
+// The layouts a llama.cpp build actually produces: CMake on Windows puts
 // binaries under build/bin/<Config>/, the Makefile build drops them in the
 // repo root, and the prebuilt release zips unpack flat.
 function llamaCppCandidates(root) {
@@ -65,10 +51,6 @@ function llamaCppCandidates(root) {
   ];
 }
 
-// Searched in order of how likely they are to be the build the user actually
-// maintains: an explicit LLAMA_CPP_DIR, then a sibling checkout next to this
-// suite (the common case -- clone both into the same parent), then the usual
-// places people put tools.
 function discoverServerExe() {
   const suiteParent = path.resolve(__dirname, '..', '..', '..');
   const roots = [
@@ -84,14 +66,12 @@ function discoverServerExe() {
   const built = firstExistingFile(roots.flatMap(llamaCppCandidates));
   if (built) return built;
 
-  // Installed on PATH (winget/brew/scoop packages, or a manual copy).
   const pathDirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
   const onPath = firstExistingFile(pathDirs.map((d) => path.join(d, EXE)));
   if (onPath) return onPath;
 
-  // Nothing found. Hand back the bare name rather than null so the eventual
-  // error message reads like a path and the spawn's own 'error' event does
-  // the reporting -- see server.js, which names the exe it tried.
+  // The bare name rather than null, so the spawn's own 'error' event reports a
+  // path-shaped value (server.js names the exe it tried).
   return EXE;
 }
 
@@ -100,10 +80,8 @@ function discoverServerExe() {
 // ---------------------------------------------------------------------------
 
 // Ollama stores a pulled model as content-addressed blobs plus a manifest that
-// maps a human reference ("llama3.2:latest") onto them. Reading the manifest is
-// what removes the last hardcoded machine-specific constant here: the digest
-// was previously pasted in literally, which was correct on exactly one machine
-// and silently wrong (a file-not-found at spawn) everywhere else.
+// maps a human reference ("llama3.2:latest") onto them. Use this rather than
+// pasting a digest, which is correct on exactly one machine.
 function resolveOllamaModel(ref, { modelsDir } = {}) {
   const dir = modelsDir || process.env.OLLAMA_MODELS || path.join(HOME, '.ollama', 'models');
   const [nameWithRepo, tag = 'latest'] = String(ref).split(':');
@@ -131,17 +109,15 @@ function resolveOllamaModel(ref, { modelsDir } = {}) {
   }
 }
 
-// Which model the shared chat instance serves. A reference, not a path, so it
-// stays meaningful across machines -- and so `ports.js`'s human-readable claim
-// and this can't drift apart.
+// A reference, not a path, so it stays meaningful across machines and cannot
+// drift from ports.js's human-readable claim.
 const LLAMA_MODEL = process.env.LLAMA_MODEL || local.LLAMA_MODEL || 'llama3.2:latest';
 
 function discoverModelPath() {
   const fromOllama = resolveOllamaModel(LLAMA_MODEL);
   if (fromOllama) return fromOllama;
 
-  // A loose GGUF dropped in a models/ dir next to the suite, for people not
-  // using Ollama at all.
+  // A loose GGUF in a models/ dir, for people not using Ollama at all.
   const suiteRoot = path.resolve(__dirname, '..', '..');
   for (const dir of [process.env.LLAMA_MODEL_DIR, path.join(suiteRoot, 'models'), path.join(HOME, 'models')]) {
     if (!dir) continue;
@@ -165,10 +141,9 @@ module.exports = {
   LLAMA_HOST: process.env.LLAMA_HOST || local.LLAMA_HOST || '127.0.0.1',
   LLAMA_PORT: Number(process.env.LLAMA_PORT) || local.LLAMA_PORT || 8090,
 
-  // Runtime coordination state for the shared instance, deliberately NOT the
-  // usual `state/` dir beside the code: `projects/local-inference-skill` is
-  // installed by *copying* into ~/.claude/skills/ and also starts this server,
-  // so the two must agree on a path that both can compute. See managed.js.
+  // Machine-level, not the suite's `state/` dir: installed skill copies and
+  // separate repos start these servers too and must compute the same path.
+  // See CLAUDE.md "For the shared instance, use managed.js".
   LLAMA_RUNTIME_DIR: process.env.LLAMA_RUNTIME_DIR || path.join(HOME, '.claude', 'llama-local-server'),
 
   resolveOllamaModel,
