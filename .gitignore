@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# Generated state. None of this is source.
+# ---------------------------------------------------------------------------
+# Every package and project writes its runtime state into a `state/` dir next
+# to its code. These files churn constantly (status.json is rewritten every 5
+# seconds), they are machine-specific, and several of them contain a verbatim
+# record of what you were working on -- session names, per-session costs,
+# working directories, and LLM-judged verdicts on your own thinking blocks.
+# They are regenerated from scratch on first run. Never commit them.
+state/
+*.lock
+*.log
+
+# Belt-and-braces: the specific files, by their real paths. Deliberately not
+# bare globs like `**/index.json` -- a pattern that broad would silently
+# swallow a legitimate source file with the same name later on.
+packages/token-monitor-core/state/
+projects/usage-history-rollups/state/
+projects/cost-anomaly-alerts/state/
+
+# ---------------------------------------------------------------------------
+# Local overrides
+# ---------------------------------------------------------------------------
+# config.local.js lets you point LLAMA_SERVER_EXE / model paths at wherever
+# your build actually lives without dirtying the tracked config.
+**/config.local.js
+.env
+.env.local
+
+# ---------------------------------------------------------------------------
+# Editor / OS noise
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---------------------------------------------------------------------------
+# There is deliberately no package.json anywhere in this suite (see README),
+# but if a future component ever grows one, its deps do not belong here.
+# ---------------------------------------------------------------------------
+node_modules/

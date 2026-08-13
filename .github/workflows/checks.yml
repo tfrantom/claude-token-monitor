@@ -1,0 +1,43 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  run-checks:
+    # Windows because the suite is Windows-first: the installers are
+    # PowerShell 5.1 and the process bookkeeping shells out to netstat/taskkill.
+    # The offline checks themselves are plain Node.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # No install step on purpose. There is no package.json anywhere in this
+      # suite and no node_modules -- stdlib only -- which is what keeps each
+      # package under packages/ extractable into its own repo. If a `npm ci`
+      # ever appears here, that property has been lost.
+
+      - name: run-checks
+        run: node run-checks.js
+
+      # A runner has no ~/.claude/projects, no GPU and no llama.cpp, so the
+      # checks needing any of those skip themselves rather than fail:
+      #   - per-project-cost-attribution  exits 3, "no transcripts found"
+      #   - local-inference-skill         needsPort 8090, nothing listening
+      #   - token-monitor-core-lifecycle  unsafe (loads a model, takes port 8090)
+      #   - ask-question-prefilter        unsafe (drives a blocking popup)
+      # What actually runs here is the offline logic: pricing, transcript
+      # parsing, the renderer, the naming helpers, watcher supervision, and
+      # llama-local-server's start/stop decision code.
+      #
+      # The same command also audits for unregistered check-shaped files and
+      # fails on one, so a new project that lands a test.js without a registry
+      # entry is caught here rather than silently going untested.
