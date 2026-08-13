@@ -43,3 +43,10 @@ $RECYCLE.BIN/
 # but if a future component ever grows one, its deps do not belong here.
 # ---------------------------------------------------------------------------
 node_modules/
+
+# ---------------------------------------------------------------------------
+# Draft primers for work not started. Local scratch, deliberately untracked:
+# they are speculative, they name mechanisms that have not been tested, and
+# half of them will be wrong. Promote one into projects/ when it is real.
+# ---------------------------------------------------------------------------
+next-ideas/
