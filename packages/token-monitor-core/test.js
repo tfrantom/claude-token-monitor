@@ -350,6 +350,23 @@ check('joinRecent pulls older context in only up to the minimum', () => {
   assert.strictEqual(joinRecent([]), '');
 });
 
+check('joinRecent leads with the newest message, not the oldest', () => {
+  // A small model anchors on what it reads first. In chronological order a
+  // topic change gets named after the message the user has already moved on
+  // from -- a session sat on "Token Monitor Repository Updates" through two
+  // later prompts about something else because that subject led the prompt.
+  const out = joinRecent(['oldest subject here', 'middle subject here', 'newest subject here']);
+  assert.ok(out.indexOf('newest subject') < out.indexOf('oldest subject'), 'newest must come first');
+  assert.match(out, /^LATEST MESSAGE:/, 'and be labelled as the one to name');
+  assert.ok(out.includes('EARLIER CONTEXT'), 'older messages are marked as background');
+});
+
+check('joinRecent adds no background section when there is only one message', () => {
+  const out = joinRecent(['just the one message that is quite long '.repeat(30)]);
+  assert.match(out, /^LATEST MESSAGE:/);
+  assert.ok(!out.includes('EARLIER CONTEXT'), 'nothing to label as background');
+});
+
 // Only the branches that decide NOT to spawn. The spawning one belongs to
 // test-lifecycle.js -- a unit test that launches a daemon leaves one behind
 // when it fails.

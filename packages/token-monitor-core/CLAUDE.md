@@ -483,12 +483,20 @@ sent to the agent*, and merging them lets a background task rename the session.
 - **Truncate per message, from the front — never tail-slice the joined
   string.** One long message could otherwise push every other message,
   including the newest, entirely out of the prompt.
-- **Recency is the signal.** Naming off the newest message alone beat naming
-  off the last three: with several messages in the window a topic change puts
-  multiple subjects in the prompt and the model names the session after the
-  *oldest*. Older messages are pulled in only to pad a short newest message up
-  to `MIN_CONTEXT_CHARS` (600 — at 180 one ordinary "can you also add X?"
-  cleared the floor on its own and got named after that sentence).
+- **Recency is the signal, and it has to be stated, not implied.** With several
+  messages in the window a topic change puts multiple subjects in the prompt
+  and the model names the session after whichever it reads *first*. That was
+  originally worked around by keeping the window tiny; raising
+  `MIN_CONTEXT_CHARS` to 600 (at 180 one ordinary "can you also add X?" cleared
+  the floor alone and got named after that sentence) brought it straight back —
+  a session sat on "Token Monitor Repository Updates" through two later prompts
+  about something else, and 6/6 samples reproduced it.
+
+  `joinRecent` therefore emits the newest message **first**, under a
+  `LATEST MESSAGE:` heading, with the rest under `EARLIER CONTEXT (background
+  only)`, and the system prompt names that heading. 6/6 correct after. Do not
+  "tidy" the window back into chronological order — ordering is the fix and the
+  labels are what let the prompt point at it.
 
 The model is nonetheless sent a rolling window of the last few messages, not
 just the unseen ones: every check advances `named_at_turn_count`, so an

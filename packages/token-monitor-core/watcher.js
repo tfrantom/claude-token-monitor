@@ -207,8 +207,15 @@ function shouldCheckForRename(entry, newTurnCount) {
 
 const MIN_CONTEXT_CHARS = 600;
 
-// The recency bias and the per-message front truncation are both load-bearing
-// -- see CLAUDE.md "Three traps that had to be fixed together".
+// Newest first, and labelled. A small model anchors on what it reads first, so
+// with the window in chronological order a topic change gets named after the
+// message the user has already moved on from -- measured twice now, most
+// recently a session stuck on "Token Monitor Repository Updates" through two
+// later prompts about something else. Ordering is the fix; the label is what
+// lets the prompt say which one to name.
+//
+// The per-message front truncation is load-bearing too -- see CLAUDE.md
+// "Three traps that had to be fixed together".
 function joinRecent(texts) {
   if (texts.length === 0) return '';
   const picked = [texts[texts.length - 1]];
@@ -216,7 +223,11 @@ function joinRecent(texts) {
     picked.unshift(texts[i]);
   }
   const perMessage = Math.max(200, Math.floor(MAX_DIFF_CHARS / picked.length));
-  return picked.map((t) => (t.length > perMessage ? t.slice(0, perMessage) : t)).join('\n\n');
+  const clip = (t) => (t.length > perMessage ? t.slice(0, perMessage) : t);
+  const newest = picked[picked.length - 1];
+  const earlier = picked.slice(0, -1);
+  if (earlier.length === 0) return `LATEST MESSAGE:\n${clip(newest)}`;
+  return `LATEST MESSAGE:\n${clip(newest)}\n\nEARLIER CONTEXT (background only):\n${earlier.map(clip).join('\n\n')}`;
 }
 
 // Words that describe the shape of an interaction rather than its subject.
