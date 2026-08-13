@@ -384,9 +384,18 @@ function buildActivity(signal, agents, ended, lastActivityMs, now = Date.now()) 
 
   if (ended) return { state: 'ended', detail: null, at: null, source: 'watcher', agents: [] };
 
+  // Only a hand-published signal can go stale. A hook one is bracketed by the
+  // next hook -- UserPromptSubmit opens a turn, Stop closes it -- so there is
+  // nothing for a heuristic to resolve, and applying it anyway silently
+  // discarded every `done`: the transcript keeps being written after a turn
+  // ends, so the gap crossed the threshold and the session went blank.
   const at = signal && signal.at ? Date.parse(signal.at) : NaN;
+  const fromHook = !!(signal && signal.source === 'hook');
   const superseded =
-    Number.isFinite(at) && Number.isFinite(lastActivityMs) && lastActivityMs - at > cfg.SIGNAL_SUPERSEDE_MS;
+    !fromHook &&
+    Number.isFinite(at) &&
+    Number.isFinite(lastActivityMs) &&
+    lastActivityMs - at > cfg.SIGNAL_SUPERSEDE_MS;
 
   if (signal && signal.state && !superseded) {
     // `working` is the least specific thing a session can say, and the

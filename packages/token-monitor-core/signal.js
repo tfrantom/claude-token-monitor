@@ -21,6 +21,15 @@
 const fs = require('fs');
 const signals = require('./lib/signals');
 
+// Claude Code fires Notification for two unrelated things: a prompt that is
+// actually blocking (permission, question) and an idle nudge some seconds
+// after a turn ends. Only the first is `waiting_user`; treating the nudge as
+// one flips a finished session from `done` to "needs you" while it sits there.
+//
+// Matched narrowly, and unmatched messages still publish: a false "needs you"
+// is noise, but a missed one means a blocked session looks idle.
+const IDLE_NOTIFICATION = /waiting for your input|idle|no longer waiting/i;
+
 function readHookPayload() {
   try {
     const raw = fs.readFileSync(0, 'utf8');
@@ -31,7 +40,7 @@ function readHookPayload() {
 }
 
 function parseArgs(argv) {
-  const opts = { agent: null, session: null, state: null, detail: null, clear: false, show: false, json: false, fromHook: false };
+  const opts = { agent: null, session: null, state: null, detail: null, clear: false, show: false, json: false, fromHook: false, notification: false };
   const rest = [];
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -39,6 +48,7 @@ function parseArgs(argv) {
     else if (a === '--session') opts.session = argv[++i];
     else if (a === '--clear') opts.clear = true;
     else if (a === '--from-hook') opts.fromHook = true;
+    else if (a === '--notification') opts.notification = true;
     else if (a === '--show') opts.show = true;
     else if (a === '--json') opts.json = true;
     else if (a === '-h' || a === '--help') opts.help = true;
@@ -108,6 +118,10 @@ function main() {
     return;
   }
 
+  // The idle nudge is not a blocking prompt; leave whatever state stands.
+  const message = typeof hook.message === 'string' ? hook.message : null;
+  if (opts.notification && message && IDLE_NOTIFICATION.test(message)) return;
+
   if (!opts.state) {
     process.stderr.write(HELP);
     process.exitCode = 1;
@@ -119,7 +133,7 @@ function main() {
       sessionId,
       agent: opts.agent,
       state: opts.state,
-      detail: opts.detail,
+      detail: opts.detail || message,
       pid: process.env.CLAUDE_PID || null,
       source: opts.fromHook || opts.session ? 'hook' : 'cli',
     });

@@ -519,6 +519,17 @@ check('running agents refine a published "working", but nothing else', () => {
   }
 });
 
+check('a hook signal is never superseded by transcript activity', () => {
+  // Hooks bracket a turn exactly, so there is nothing for the heuristic to
+  // resolve. Applying it anyway discarded every `done`: a transcript keeps
+  // being written after a turn ends, the gap crossed the threshold, and the
+  // session went blank on every bar a minute after finishing.
+  const at = new Date(Date.now() - 10 * MIN).toISOString();
+  const long = buildActivity({ state: 'done', at, source: 'hook' }, [], false, Date.parse(at) + 5 * MIN);
+  assert.strictEqual(long.state, 'done', 'a hook signal must survive later writes');
+  assert.strictEqual(long.source, 'hook');
+});
+
 check('a signal is superseded once the transcript keeps growing past it', () => {
   // Publishing writes a tool call to the transcript, so the transcript is
   // always a beat newer than the signal; only a wide gap means "back at work".
