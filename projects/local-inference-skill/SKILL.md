@@ -9,16 +9,16 @@ allowed-tools:
 
 # local-inference
 
-Three narrow scripts that send a subtask to a local `llama3.2:3b` running on
+Three narrow scripts that send a subtask to a local `llama3.2:3b` on
 `http://127.0.0.1:8090` (llama.cpp's OpenAI-compatible server, from the
-claude-token-monitor suite — see `config.json` next to this file for where
-that suite lives on this machine). A call costs zero API tokens and typically
-returns in under a second.
+claude-token-monitor suite — `config.json` next to this file says where that
+suite lives). A call costs zero API tokens and typically returns in under a
+second.
 
-The model is **3 billion parameters**. It is much weaker than you. Everything
-below about scope exists because a bad delegation costs more than it saves:
-you pay for the round trip *and* for reading a wrong answer *and* for redoing
-the work.
+The model is **3 billion parameters** and much weaker than you. Everything
+below about scope exists because a bad delegation costs more than it saves: you
+pay for the round trip *and* for reading a wrong answer *and* for redoing the
+work.
 
 ## The one rule
 
@@ -68,10 +68,10 @@ node "%USERPROFILE%\.claude\skills\local-inference\scripts\classify.js" --in pay
 ```
 
 **Use `--in`, not a stdin pipe.** Windows PowerShell re-encodes anything piped
-to a native executable through the console codepage, which silently corrupts
-every non-ASCII character on the way in (`Résumé` arrives as `RÃ©sumÃ©`).
-Reading the file directly avoids the shell entirely. Piping to stdin does work
-from a POSIX shell (`node classify.js < payload.json`) if you prefer it there.
+to a native executable through the console codepage, silently corrupting every
+non-ASCII character on the way in (`Résumé` arrives as `RÃ©sumÃ©`). Stdin does
+work from a POSIX shell (`node classify.js < payload.json`) if you prefer it
+there.
 
 Build the JSON file with the Write tool — never by interpolating text into a
 shell command line, which will eventually break on a quote or a newline in the

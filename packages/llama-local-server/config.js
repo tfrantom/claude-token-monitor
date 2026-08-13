@@ -1,8 +1,7 @@
 'use strict';
 
-// Resolution order for both machine-specific values: env var ->
-// ./config.local.js (gitignored) -> discovery. Nothing here throws when
-// resolution fails -- see CLAUDE.md "Machine-specific config is resolved".
+// Resolution order: env var -> ./config.local.js -> discovery, and nothing here
+// throws -- see CLAUDE.md "Machine-specific config is resolved".
 
 const fs = require('fs');
 const os = require('os');
@@ -24,22 +23,13 @@ function firstExistingFile(candidates) {
     if (!c) continue;
     try {
       if (fs.statSync(c).isFile()) return c;
-    } catch {
-      /* next */
-    }
+    } catch {}
   }
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// llama-server.exe
-// ---------------------------------------------------------------------------
-
 const EXE = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
 
-// The layouts a llama.cpp build actually produces: CMake on Windows puts
-// binaries under build/bin/<Config>/, the Makefile build drops them in the
-// repo root, and the prebuilt release zips unpack flat.
 function llamaCppCandidates(root) {
   return [
     path.join(root, 'build', 'bin', 'Release', EXE),
@@ -70,23 +60,15 @@ function discoverServerExe() {
   const onPath = firstExistingFile(pathDirs.map((d) => path.join(d, EXE)));
   if (onPath) return onPath;
 
-  // The bare name rather than null, so the spawn's own 'error' event reports a
-  // path-shaped value (server.js names the exe it tried).
+  // The bare name rather than null, so the spawn's 'error' event reports a
+  // path-shaped value.
   return EXE;
 }
 
-// ---------------------------------------------------------------------------
-// The model
-// ---------------------------------------------------------------------------
-
-// Ollama stores a pulled model as content-addressed blobs plus a manifest that
-// maps a human reference ("llama3.2:latest") onto them. Use this rather than
-// pasting a digest, which is correct on exactly one machine.
 function resolveOllamaModel(ref, { modelsDir } = {}) {
   const dir = modelsDir || process.env.OLLAMA_MODELS || path.join(HOME, '.ollama', 'models');
   const [nameWithRepo, tag = 'latest'] = String(ref).split(':');
   const parts = nameWithRepo.split('/');
-  // Bare "llama3.2" means the official library namespace.
   const repo = parts.length === 1 ? ['registry.ollama.ai', 'library', parts[0]] : ['registry.ollama.ai', ...parts];
 
   const manifestPath = path.join(dir, 'manifests', ...repo, tag);
@@ -100,7 +82,6 @@ function resolveOllamaModel(ref, { modelsDir } = {}) {
   const layer = (manifest.layers || []).find((l) => l.mediaType === 'application/vnd.ollama.image.model');
   if (!layer || !layer.digest) return null;
 
-  // Blobs are stored with the digest's ':' replaced by '-'.
   const blob = path.join(dir, 'blobs', layer.digest.replace(':', '-'));
   try {
     return fs.statSync(blob).isFile() ? blob : null;
@@ -109,15 +90,12 @@ function resolveOllamaModel(ref, { modelsDir } = {}) {
   }
 }
 
-// A reference, not a path, so it stays meaningful across machines and cannot
-// drift from ports.js's human-readable claim.
 const LLAMA_MODEL = process.env.LLAMA_MODEL || local.LLAMA_MODEL || 'llama3.2:latest';
 
 function discoverModelPath() {
   const fromOllama = resolveOllamaModel(LLAMA_MODEL);
   if (fromOllama) return fromOllama;
 
-  // A loose GGUF in a models/ dir, for people not using Ollama at all.
   const suiteRoot = path.resolve(__dirname, '..', '..');
   for (const dir of [process.env.LLAMA_MODEL_DIR, path.join(suiteRoot, 'models'), path.join(HOME, 'models')]) {
     if (!dir) continue;
@@ -141,9 +119,8 @@ module.exports = {
   LLAMA_HOST: process.env.LLAMA_HOST || local.LLAMA_HOST || '127.0.0.1',
   LLAMA_PORT: Number(process.env.LLAMA_PORT) || local.LLAMA_PORT || 8090,
 
-  // Machine-level, not the suite's `state/` dir: installed skill copies and
-  // separate repos start these servers too and must compute the same path.
-  // See CLAUDE.md "For the shared instance, use managed.js".
+  // Machine-level, never the suite's state/ dir -- see CLAUDE.md "For the
+  // shared instance, use managed.js".
   LLAMA_RUNTIME_DIR: process.env.LLAMA_RUNTIME_DIR || path.join(HOME, '.claude', 'llama-local-server'),
 
   resolveOllamaModel,

@@ -1,10 +1,8 @@
 'use strict';
 
-// Drives poll() against a scratch status.json fixture, so every transition --
-// including ones that would take 30 real minutes -- runs in a second. Points
-// at a temp dir via env, so it never touches the real history.
-//
-// Run: node test-poller.js
+// node test-poller.js -- drives poll() against a scratch fixture.
+// The env redirects below must stay ABOVE the require('./config'), or this
+// writes to the real history.
 
 const fs = require('fs');
 const os = require('os');
@@ -100,8 +98,8 @@ check(!('A' in state), 'A dropped from tracking');
 
 section('transient all-ended blip does not finalize a live session');
 step({ B: session('B', { cost: 5 }) });
-step({ B: session('B', { cost: 5, ended: true }) }); // registry hiccup: 1 poll
-step({ B: session('B', { cost: 6 }) }); // back to live before threshold
+step({ B: session('B', { cost: 5, ended: true }) });
+step({ B: session('B', { cost: 6 }) });
 check(history().length === 1, 'no final snapshot written for the one-poll blip');
 check(state.B.ended_polls === 0, 'ended counter reset once the session read live again');
 
@@ -123,7 +121,7 @@ fs.rmSync(process.env.ROLLUP_STATUS_FILE);
 step(null);
 check(history().length === before, 'missing status.json writes nothing');
 check('C' in state, 'C still tracked across the missing file');
-fs.writeFileSync(process.env.ROLLUP_STATUS_FILE, JSON.stringify({ updated_at: 'x' })); // no sessions key
+fs.writeFileSync(process.env.ROLLUP_STATUS_FILE, JSON.stringify({ updated_at: 'x' }));
 step(null);
 check(history().length === before, 'status.json without a sessions key writes nothing');
 check('C' in state, 'C still tracked across the shapeless read');
@@ -143,9 +141,8 @@ step({ C: session('C', { cost: 10, ended: true }) }, t0 + 1e7);
 step({ C: session('C', { cost: 10, ended: true }) }, t0 + 1e7);
 const afterFirstEnd = history().length;
 check(history()[afterFirstEnd - 1].reason === 'ended', 'C finalized');
-// Kept just inside PERIODIC_SNAPSHOT_MS of the last write, so this isolates
-// the resume/re-finalize path without a periodic sample landing in between.
-step({ C: session('C', { cost: 12 }) }, t0 + 1e7 + 1000); // resumed: live again, more cost
+// Kept inside PERIODIC_SNAPSHOT_MS of the last write, so no periodic sample lands in between.
+step({ C: session('C', { cost: 12 }) }, t0 + 1e7 + 1000);
 check(state.C.finalized === false, 'finalized cleared when the session came back live');
 check(history().length === afterFirstEnd, 'coming back live writes nothing by itself');
 step({ C: session('C', { cost: 15, ended: true }) }, t0 + 1e7 + 2000);
@@ -180,13 +177,13 @@ const day = 24 * 60 * 60 * 1000;
 const old = Date.now() - 30 * day;
 const mk = (sid, offsetMs, cost, reason = 'periodic') => ({ ts: new Date(offsetMs).toISOString(), session_id: sid, reason, name: sid, totals: { cost_usd: cost, thinking: cost * 10 } });
 const raw = [
-  mk('P', old, 1), // day 1, three snapshots
+  mk('P', old, 1),
   mk('P', old + 3600e3, 4),
   mk('P', old + 7200e3, 6),
-  mk('P', old + day, 11, 'ended'), // day 2
-  mk('Q', old + 3600e3, 2), // different session, same old day
+  mk('P', old + day, 11, 'ended'),
+  mk('Q', old + 3600e3, 2),
   mk('Q', old + 7200e3, 5, 'ended'),
-  mk('R', Date.now() - 3600e3, 7), // inside the keep window
+  mk('R', Date.now() - 3600e3, 7),
 ];
 const cutoff = Date.now() - 7 * day;
 const out = compact(raw, cutoff);

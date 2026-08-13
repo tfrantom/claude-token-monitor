@@ -1,12 +1,7 @@
 'use strict';
 
-// Machine-wide lifecycle ownership for llama-server instances: which process
-// on a port is ours to stop, whether anyone still wants it, and who does the
-// stopping given that whoever started it has usually exited already.
-//
-// Ownership is a file, not a variable, and no record means no kill. Read
-// CLAUDE.md "For the shared instance, use managed.js" before changing anything
-// in here -- every refusal below is deliberate.
+// Machine-wide lifecycle ownership. Every refusal below is deliberate -- see
+// CLAUDE.md "For the shared instance, use managed.js".
 
 const fs = require('fs');
 const path = require('path');
@@ -19,22 +14,13 @@ const SHARED_CLAIM = 'chat-shared';
 
 const RUNTIME_DIR = cfg.LLAMA_RUNTIME_DIR;
 
-// A spawn holds the lock while llama.cpp loads the model off disk: measured
-// cold at ~4s for a 3B Q4, over a minute for a 7B on a cold file cache. The
-// ceiling is generous because too short means two processes spawn, while too
-// long only delays startup once, after a crashed spawner.
 const SPAWN_LOCK_STALE_MS = 180_000;
 
-// Long enough to survive the gap between two searches in one sitting, short
-// enough that a forgotten 6.4 GB model comes back while you are still at the
-// desk.
 const DEFAULT_IDLE_TTL_MS = 15 * 60 * 1000;
 
 const TOUCH_THROTTLE_MS = 30_000;
 
 function recordFile(name) {
-  // Claim names come from ports.js, which is source rather than user input --
-  // but a name reaching the filesystem is constrained rather than trusted.
   if (!/^[a-z0-9][a-z0-9._-]*$/i.test(name)) throw new Error(`unsafe claim name: ${name}`);
   return path.join(RUNTIME_DIR, `${name}.json`);
 }
@@ -50,16 +36,12 @@ function ensureRuntimeDir() {
 function isPidAlive(pid) {
   if (!pid) return false;
   try {
-    process.kill(pid, 0); // signal 0: existence probe, sends nothing
+    process.kill(pid, 0);
     return true;
   } catch {
     return false;
   }
 }
-
-// ---------------------------------------------------------------------------
-// Records
-// ---------------------------------------------------------------------------
 
 function readRecord(name = SHARED_CLAIM) {
   try {
@@ -82,12 +64,9 @@ function writeRecord(name, rec) {
 function clearRecord(name = SHARED_CLAIM) {
   try {
     fs.unlinkSync(recordFile(name));
-  } catch {
-    /* already gone */
-  }
+  } catch {}
 }
 
-// Every record on disk, including ones written by other repos.
 function listRecords() {
   let files;
   try {
@@ -104,8 +83,6 @@ function listRecords() {
   return out;
 }
 
-// Marks an instance as still wanted. Throttled: the common caller is a
-// per-request client, and the reaper only needs minute-resolution.
 function touch(name = SHARED_CLAIM) {
   const rec = readRecord(name);
   if (!rec) return false;
@@ -119,14 +96,6 @@ function touch(name = SHARED_CLAIM) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Spawn lock
-// ---------------------------------------------------------------------------
-//
-// isUp()-then-spawn is not atomic: two sessions opened in the same second both
-// see an empty port and both spawn. This collapses that to one spawner and one
-// waiter.
-
 function acquireSpawnLock(name) {
   ensureRuntimeDir();
   const file = spawnLockFile(name);
@@ -134,9 +103,7 @@ function acquireSpawnLock(name) {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
     const fresh = raw.at_ms && Date.now() - raw.at_ms < SPAWN_LOCK_STALE_MS;
     if (fresh && isPidAlive(raw.pid) && raw.pid !== process.pid) return false;
-  } catch {
-    /* no lock, or unparseable -- take it */
-  }
+  } catch {}
   fs.writeFileSync(file, JSON.stringify({ pid: process.pid, at_ms: Date.now() }));
   return true;
 }
@@ -146,31 +113,21 @@ function releaseSpawnLock(name) {
     const file = spawnLockFile(name);
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (raw.pid === process.pid) fs.unlinkSync(file);
-  } catch {
-    /* already released, or taken over after going stale */
-  }
+  } catch {}
 }
 
-// ---------------------------------------------------------------------------
-// Who actually holds the port
-// ---------------------------------------------------------------------------
-
-// LISTENING rows only. Once anything has connected, a port also has one
-// ESTABLISHED row per client, and those carry the *client's* pid -- usually
-// the watcher's. Split out from pidOnPort so it can be tested against captured
-// output.
+// LISTENING rows only: an ESTABLISHED row carries the *client's* pid, usually
+// the watcher's.
 function parseNetstatListener(stdout, port) {
   for (const line of String(stdout).split(/\r?\n/)) {
-    // "  TCP    127.0.0.1:8090   0.0.0.0:0   LISTENING   12345"
     const m = line.match(/^\s*TCP\s+\S+:(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$/i);
     if (m && Number(m[1]) === port) return Number(m[2]);
   }
   return null;
 }
 
-// Windows-only (netstat -ano). Returns null anywhere it cannot tell, and every
-// caller treats null as "fall back to the weaker check", never as "nothing is
-// there".
+// Windows-only. null means "cannot tell", never "nothing is there"; callers
+// fall back to the weaker check.
 function pidOnPort(port, { timeoutMs = 4000 } = {}) {
   return new Promise((resolve) => {
     if (process.platform !== 'win32') return resolve(null);
@@ -181,18 +138,8 @@ function pidOnPort(port, { timeoutMs = 4000 } = {}) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Start
-// ---------------------------------------------------------------------------
-
-// Starts the instance for a port claim if it is not already up, and records
-// this suite's ownership of it.
-//
-// Returns { claim, baseUrl, port, pid, started, managed }.
-//   started  true only when THIS call spawned the process
-//   managed  true when a record exists, i.e. a reaper is permitted to stop it
-//            later. False means an instance found but not started here, which
-//            must be left alone.
+// -> { claim, baseUrl, port, pid, started, managed }
+// `managed` true means a record exists and a reaper may stop it later.
 async function ensureManaged(name, { startedBy = 'unknown', waitMs = 30_000, policy, idleTtlMs, ...opts } = {}) {
   const claim = ports.get(name);
   const port = claim.port;
@@ -204,14 +151,10 @@ async function ensureManaged(name, { startedBy = 'unknown', waitMs = 30_000, pol
 
   if (await server.isUp(port, host)) {
     const rec = readRecord(name);
-    // Touch it so a reaper does not call it idle purely because this caller
-    // reused rather than started it.
     if (rec) touch(name);
     return { claim: name, baseUrl, port, pid: rec?.pid ?? null, started: false, managed: !!rec };
   }
 
-  // Someone else is mid-spawn: wait for their server rather than racing it
-  // into a bind failure.
   if (!acquireSpawnLock(name)) {
     const deadline = Date.now() + waitMs;
     while (Date.now() < deadline) {
@@ -221,9 +164,8 @@ async function ensureManaged(name, { startedBy = 'unknown', waitMs = 30_000, pol
         return { claim: name, baseUrl, port, pid: rec?.pid ?? null, started: false, managed: !!rec };
       }
     }
-    // The other spawner died holding a lock that has not gone stale yet.
-    // Spawning anyway is the better failure mode: worst case we lose a bind
-    // and say so.
+    // Falls through on purpose: the other spawner died holding a lock that has
+    // not gone stale yet, and losing a bind is the better failure mode.
   }
 
   try {
@@ -232,9 +174,6 @@ async function ensureManaged(name, { startedBy = 'unknown', waitMs = 30_000, pol
       host,
       port,
       alias: opts.alias || claim.alias || name,
-      // Must outlive whichever short-lived process started it. A detached
-      // child can silently fail to launch on Windows, so this is verified
-      // rather than assumed: ensureRunning() only returns once /health answers.
       detached: true,
       timeoutMs: waitMs,
     });
@@ -258,14 +197,9 @@ async function ensureManaged(name, { startedBy = 'unknown', waitMs = 30_000, pol
   }
 }
 
-// The shared chat instance -- what almost every caller wants.
 function ensureShared(opts = {}) {
   return ensureManaged(SHARED_CLAIM, { policy: 'supervised', ...opts });
 }
-
-// ---------------------------------------------------------------------------
-// Stop
-// ---------------------------------------------------------------------------
 
 async function waitForExit(pid, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
@@ -278,26 +212,21 @@ async function waitForExit(pid, timeoutMs) {
 
 function forceKill(pid) {
   return new Promise((resolve) => {
-    // /PID, never /IM: several llama-server.exe processes routinely run here
-    // and the others may belong to another session or repo. No /T either.
+    // /PID, never /IM, and never /T: the other llama-server.exe processes may
+    // belong to another session or repo.
     execFile('taskkill', ['/PID', String(pid), '/F'], { timeout: 5000, windowsHide: true }, () => resolve());
   });
 }
 
-// Stops an instance IF this suite recorded starting it.
-//
-// Returns { stopped, reason, pid, claim }. Never throws: it is called from
-// shutdown paths where an exception would only replace a clean exit with a
-// stack trace.
+// Stops an instance IF this suite recorded starting it. Never throws: it is
+// called from shutdown paths.
 async function stopManaged(name, { reason = 'requested' } = {}) {
   const rec = readRecord(name);
   if (!rec) {
     let up = false;
     try {
       up = await server.isUp(ports.get(name).port);
-    } catch {
-      /* unknown claim -- treat as nothing to do */
-    }
+    } catch {}
     return {
       claim: name,
       stopped: false,
@@ -315,10 +244,9 @@ async function stopManaged(name, { reason = 'requested' } = {}) {
     return { claim: name, stopped: false, pid, reason: 'recorded instance is already gone' };
   }
 
-  // PID reuse is the one way this could kill something innocent, so confirm the
-  // recorded pid is the process actually holding the port. When netstat cannot
-  // tell (non-Windows, or it failed), fall back to the weaker check rather than
-  // either refusing to clean up or killing blind.
+  // PID reuse is the one way this could kill a bystander, so confirm the
+  // recorded pid holds the port. A null from netstat means "cannot tell", so
+  // fall back to the weaker check rather than killing blind.
   const holder = await pidOnPort(port);
   if (holder !== null && holder !== pid) {
     clearRecord(name);
@@ -336,9 +264,7 @@ async function stopManaged(name, { reason = 'requested' } = {}) {
 
   try {
     process.kill(pid, 'SIGTERM');
-  } catch {
-    /* raced with its own exit */
-  }
+  } catch {}
   if (!(await waitForExit(pid, 5000))) {
     await forceKill(pid);
     await waitForExit(pid, 3000);
@@ -352,8 +278,6 @@ function stopShared(opts = {}) {
   return stopManaged(SHARED_CLAIM, opts);
 }
 
-// Stops every managed instance. The watcher's shutdown path: when the last
-// Claude Code session goes away, nothing this suite started should survive it.
 async function stopAll({ reason = 'shutdown', include = () => true } = {}) {
   const results = [];
   for (const rec of listRecords()) {
@@ -363,19 +287,12 @@ async function stopAll({ reason = 'shutdown', include = () => true } = {}) {
   return results;
 }
 
-// ---------------------------------------------------------------------------
-// Reap
-// ---------------------------------------------------------------------------
-
-// The decision, split from the doing so it can be tested without a real server
-// to kill. Returns { reap, idleFor, why }.
 function isReapable(rec, now = Date.now()) {
   if (rec.reap_policy !== 'idle' || !rec.idle_ttl_ms) {
     return { reap: false, idleFor: null, why: 'supervised -- lifetime tied to the watcher, never idle-reaped' };
   }
-  // started_at as the fallback, not `now`: an instance spawned and never
-  // touched must still age out, or a client that forgets to touch() is
-  // immortal.
+  // started_at as the fallback, not `now`: a client that forgets to touch()
+  // must still age out.
   const last = Date.parse(rec.last_used_at || rec.started_at || 0) || 0;
   const idleFor = now - last;
   if (idleFor < rec.idle_ttl_ms) {
@@ -384,8 +301,6 @@ function isReapable(rec, now = Date.now()) {
   return { reap: true, idleFor, why: `idle ${Math.round(idleFor / 1000)}s (ttl ${Math.round(rec.idle_ttl_ms / 1000)}s)` };
 }
 
-// Stops 'idle' instances past their TTL and clears records whose process is
-// gone. Safe to call often and from anywhere; the watcher calls it every tick.
 async function reap({ now = Date.now(), reason = 'idle' } = {}) {
   const acted = [];
   for (const rec of listRecords()) {
@@ -404,32 +319,23 @@ async function reap({ now = Date.now(), reason = 'idle' } = {}) {
   return acted;
 }
 
-// ---------------------------------------------------------------------------
-// Status
-// ---------------------------------------------------------------------------
-
-// Is the server for this claim actually answering? Distinct from status(),
-// which only asks whether the recorded pid still exists: a process can be alive
-// and wedged, and an instance can be up with no record of who started it.
+// Whether the server is answering, as opposed to status()'s "the recorded pid
+// still exists".
 async function isUpFor(name) {
   const claim = ports.get(name);
   return server.isUp(claim.port, claim.host);
 }
 
-// Cheap; no network. See isUpFor() for whether it is answering.
 function status(name = SHARED_CLAIM) {
   const rec = readRecord(name);
   if (!rec) return { claim: name, managed: false, pid: null, alive: false };
   return { claim: name, managed: true, pid: rec.pid, alive: isPidAlive(rec.pid), record: rec };
 }
 
-// Back-compat alias for the shared instance.
 function sharedStatus() {
   return status(SHARED_CLAIM);
 }
 
-// Every managed instance, with liveness and idle age. What the CLI prints and
-// what a supervisor logs.
 function statusAll({ now = Date.now() } = {}) {
   return listRecords().map((rec) => {
     const last = Date.parse(rec.last_used_at || rec.started_at || 0) || 0;
@@ -480,11 +386,6 @@ module.exports = {
   isPidAlive,
 };
 
-// ---------------------------------------------------------------------------
-// CLI:  node managed.js            -- what is running and who owns it
-//       node managed.js --reap     -- stop anything idle past its TTL
-//       node managed.js --stop-all -- stop everything this suite started
-// ---------------------------------------------------------------------------
 if (require.main === module) {
   (async () => {
     const arg = process.argv[2];

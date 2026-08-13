@@ -2,9 +2,6 @@
 
 const { BASE_URL } = require('../../llama-local-server/server');
 
-// Every block carries every field, with "na"/0 filler where a field does not
-// apply to its type: one flat shape is easier for grammar-constrained decoding
-// to get right than a discriminated union.
 const SYSTEM_PROMPT = `You classify blocks from an AI coding assistant's turn. For each block, judge it against the kind it actually is — thinking or tool_use — and fill in every field of the response:
 
 - thinking blocks: set "verdict" to one of productive (tight, on-task reasoning), restating (re-summarizing already-known context with no new reasoning), backtracking (reconsidering one earlier decision for a good reason), or looping (repeating the same unresolved point without making progress). Set "productive_fraction" to how much of the block (0 to 1) was productive reasoning vs. waste. Leave "purpose" as "na".
@@ -47,10 +44,7 @@ function buildUserMessage(blocks) {
   return blocks.map((b) => `[${b.index}:${b.type}] ${truncate(b.text, MAX_BLOCK_CHARS)}`).join('\n\n');
 }
 
-// One batched round trip per turn, because a turn's blocks share context -- a
-// third tool call is only visibly redundant next to the first. Returns a map
-// keyed by block index, or null on any failure; the caller leaves those blocks
-// unclassified and retries later.
+// -> Map keyed by block index, or null on any failure.
 async function classifyTurn(turn) {
   const blocks = turn.blocks.slice(0, MAX_BLOCKS_PER_REQUEST);
   if (blocks.length === 0) return null;

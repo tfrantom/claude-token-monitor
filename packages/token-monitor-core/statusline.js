@@ -1,24 +1,18 @@
 #!/usr/bin/env node
 'use strict';
 
-// Invoked by Claude Code's statusLine hook on every render: reads the file the
-// watcher wrote and formats it, and starts the watcher when none is running.
-// It must do no other work — see CLAUDE.md "The status line starts the
-// watcher, and that budget is tiny".
+// Invoked on every render, so it must do no work beyond formatting -- see
+// CLAUDE.md "The status line starts the watcher, and that budget is tiny".
 
 const fs = require('fs');
 const cfg = require('./config');
 const { ensureWatcher } = require('./lib/supervisor');
 
-// One line per invocation, off by default. Wrapped because diagnostics must
-// never break rendering.
 function trace(fields) {
   if (!cfg.STATUSLINE_TRACE) return;
   try {
     fs.appendFileSync(cfg.STATUSLINE_TRACE_FILE, JSON.stringify({ at: new Date().toISOString(), ...fields }) + '\n');
-  } catch {
-    /* diagnostics must never break rendering */
-  }
+  } catch {}
 }
 
 function readStdin() {
@@ -29,7 +23,6 @@ function readStdin() {
   }
 }
 
-// Drops a trailing ".0" -- the line is space-constrained.
 function fmtK(n) {
   const scale = (v, suffix) => `${v >= 10 ? Math.round(v) : Number(v.toFixed(1))}${suffix}`;
   if (n >= 1e6) return scale(n / 1e6, 'M');
@@ -46,16 +39,6 @@ const DIM = '\x1b[2m';
 const CYAN = '\x1b[36m';
 const RESET = '\x1b[0m';
 
-// The percentage annotates the thinking total; it does not replace it. With
-// nothing classified yet, fall back to the plain number rather than show a
-// misleading 0%.
-function renderThinking(thinkingTotal, sem) {
-  const classified = sem ? sem.thinking_productive + sem.thinking_wasted : 0;
-  if (classified < 1) return `thk ${fmtK(thinkingTotal)}`;
-  const pct = Math.round((sem.thinking_productive / classified) * 100);
-  return `thk ${fmtK(thinkingTotal)} (${pct}%p)`;
-}
-
 function fmtCostShort(n) {
   return n >= 10 ? `$${Math.round(n)}` : `$${n.toFixed(1)}`;
 }
@@ -64,8 +47,6 @@ function totalTokens(t) {
   return t.context + t.cache_write + t.cache_read + t.thinking + t.writing + t.tool_calls;
 }
 
-// Only the active session gets the per-agent breakdown; otherwise N terminal
-// tabs each render N agent lists and the line is unusable.
 function renderSession(s, isActive) {
   const t = s.totals;
   const agents = s.agents || [];
@@ -79,13 +60,10 @@ function renderSession(s, isActive) {
     );
   }
 
-  const badge = agents.length ? `${DIM} ${agents.length}A${RESET}` : ''; // "3A" == three running agents
+  const badge = agents.length ? `${DIM} ${agents.length}A${RESET}` : '';
   return `${DIM}${s.name}${RESET}${badge}${DIM} ${fmtCostShort(t.cost_usd)}${RESET}`;
 }
 
-// What to show before the watcher has ever written a status.json. Each state
-// must read differently: a user has to be able to tell "coming up in a second"
-// from "broken, go look".
 function watcherMessage(watcherState) {
   switch (watcherState) {
     case 'starting':
@@ -101,9 +79,8 @@ function watcherMessage(watcherState) {
   }
 }
 
-// Returns the line rather than printing it, so another statusLine entry point
-// can delegate here without a second node startup. `statusOverride` is for
-// tests only -- see CLAUDE.md "Do not touch the live status.json in a test".
+// `statusOverride` is test-only -- see CLAUDE.md "Do not touch the live
+// status.json in a test".
 function renderLine(input, statusOverride, watcherState) {
   const activeId = input.session_id || input.sessionId || null;
 
@@ -118,8 +95,8 @@ function renderLine(input, statusOverride, watcherState) {
     }
   }
 
-  // The watcher keeps ended sessions in status.json for other consumers, so
-  // the bar has to filter them here rather than upstream.
+  // Ended sessions stay in status.json for other consumers, so filtering them
+  // is the bar's job, not the watcher's.
   const sessions = Object.values(status.sessions || {})
     .filter((s) => !s.ended)
     .sort((a, b) => {
@@ -152,9 +129,8 @@ function main() {
   } catch {
     input = {};
   }
-  // status.json is written by a process that upgrades independently of this
-  // one, and an uncaught throw here is a stack trace ten times a second. One
-  // dim line is the only acceptable failure mode.
+  // An uncaught throw here is a stack trace ten times a second; one dim line is
+  // the only acceptable failure mode.
   let line;
   try {
     const watcherState = ensureWatcher();
@@ -165,7 +141,6 @@ function main() {
   process.stdout.write(line);
 }
 
-// Script only, so tests can require the renderer.
 if (require.main === module) main();
 
 module.exports = { renderLine, renderSession, fmtK, fmtCostShort, watcherMessage };

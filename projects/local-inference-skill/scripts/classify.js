@@ -1,21 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 
-// classify.js -- pick one label from a fixed, closed list, for one text or
-// for each of several short items in one batched request. See SKILL.md for
-// when this is an appropriate thing to delegate.
-//
-// Input: one JSON object, via `--in <file.json>` (preferred) or on stdin:
-//   { "text": "...", "labels": ["a", "b", "c"] }
-//   { "items": ["...", "..."], "labels": ["a", "b", "c"] }
-// Optional "context": one line on what the labels mean.
-//
-// Output: the chosen label, or one label per line in input order. "unclear"
-// is always a valid choice even when not in the caller's list, and is a
-// legitimate exit-0 result.
-//
-// Exit 1 means delegation failed (bad input, server unavailable, unusable
-// response) -- do the classification yourself rather than retrying.
+// node classify.js --in <file.json>   -- see SKILL.md for scope, CLAUDE.md for the contract
+//   { "text": "...", "labels": ["a","b"], "context": "..." }
+//   { "items": ["...","..."], "labels": ["a","b"] }
 
 const { ensureRunning, chatJSON, truncate, readInputJSON, failAndExit } = require('./lib/local-client');
 

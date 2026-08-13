@@ -4,19 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const cfg = require('../config');
 
-// cwd -> project resolution. Three candidate roots, and the DEEPEST one wins
-// rather than a fixed priority order:
-//
-//   1. override  -- longest matching prefix in cfg.PROJECT_OVERRIDES
-//   2. git       -- nearest ancestor containing `.git` (dir for a normal
-//                   clone, file for a worktree/submodule)
-//   3. workspace -- nearest ancestor that is an immediate child of one of
-//                   cfg.WORKSPACE_ROOTS
-//
-// Deepest-wins rather than git-first because a workspace root that becomes a
-// repo one day (`git init C:\projects`) would otherwise collapse every
-// sub-project into one bucket. See ../README.md for what this means for the
-// suite itself, which has no .git of its own.
+// see CLAUDE.md "cwd -> project: deepest of three candidate roots"
 
 const cache = new Map();
 
@@ -55,8 +43,7 @@ function workspaceChildRoot(dir) {
 }
 
 function pathEq(a, b) {
-  // Windows paths are case-insensitive; comparing raw strings mis-buckets
-  // `C:\Projects\foo` against `C:\projects\foo`.
+  // Case-insensitive on Windows, or `C:\Projects\foo` mis-buckets against `C:\projects\foo`.
   return process.platform === 'win32'
     ? a.toLowerCase() === b.toLowerCase()
     : a === b;
@@ -77,7 +64,6 @@ function overrideRoot(dir) {
   return best;
 }
 
-// -> { project, project_root, resolver, subpath }
 function resolveProject(cwd) {
   const dir = norm(cwd);
   if (!dir) {
@@ -95,19 +81,13 @@ function resolveProject(cwd) {
 
   let winner = null;
   for (const c of candidates) {
+    // `>` not `>=`: on a depth tie the earlier candidate (override > git > workspace) keeps it.
     if (!winner || c.root.length > winner.root.length) winner = c;
-    // Tie on depth: earlier candidate (override > git > workspace) keeps it.
   }
   if (!winner) {
     if (cfg.WORKSPACE_ROOTS.map(norm).some((r) => r && pathEq(r, dir))) {
-      // At the workspace root itself: real work, but not attributable to any
-      // sub-project. Labelled distinctly rather than as a project named after
-      // the root -- that row reads exactly like the coarse `C--projects`
-      // bucket this project exists to split up.
       winner = { root: dir, resolver: 'workspace-root', name: `${path.basename(dir)} (root)` };
     } else {
-      // Outside every workspace root and not in a repo -- its own project,
-      // rather than silently merged with unrelated siblings.
       winner = { root: dir, resolver: 'cwd', name: path.basename(dir) || dir };
     }
   }

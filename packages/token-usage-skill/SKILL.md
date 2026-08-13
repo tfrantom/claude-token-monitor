@@ -8,21 +8,18 @@ allowed-tools:
 
 # token-usage
 
-Backed by a background watcher (`C:\projects\claude-token-monitor\packages\token-monitor-core\`,
-one package in the claude-token-monitor suite) that classifies every active
-Claude Code session's transcript in real time. Input, cache-read, cache-write,
-and output token counts are exact values straight from the API's own `usage`
-object, and cost is computed from current per-model pricing. The
-thinking/writing/tool-calls split is an **estimate**, prorated by inter-block
-timing: the API reports one combined output-token figure per turn and exposes
-no per-block split. Report it as an approximation. See
-`C:\projects\claude-token-monitor\README.md` for the full suite design.
+Backed by a background watcher (`C:\projects\claude-token-monitor\packages\token-monitor-core\`)
+that classifies every active Claude Code session's transcript in real time.
+Input, cache-read, cache-write and output token counts are exact values from
+the API's own `usage` object, and cost comes from current per-model pricing.
+The thinking/writing/tool-calls split is an **estimate**, prorated by
+inter-block timing, because the API reports one combined output figure per
+turn. Report that split as an approximation.
 
 **A session's figures include the spend of any subagents it launched** (Task
-tool). Those turns live in separate sidechain transcripts and were missing
-entirely before 2026-08-06, understating cost by roughly 18%. So a total
-reported now can legitimately exceed one quoted earlier in the same session's
-history, and an agent-heavy session's cost is mostly not the main thread's.
+tool), so a total reported now can legitimately exceed one quoted earlier in
+the same session's history, and an agent-heavy session's cost is mostly not
+the main thread's.
 
 ## Usage
 
@@ -34,9 +31,9 @@ node "%USERPROFILE%\.claude\skills\token-usage\scripts\lookup.js"
 
 (PowerShell: `node "$env:USERPROFILE\.claude\skills\token-usage\scripts\lookup.js"`)
 
-The script auto-detects the current session via `CLAUDE_CODE_SESSION_ID`,
-which every Claude Code Bash invocation inherits -- no argument needed for
-"how much has *this* session used".
+It auto-detects the current session via `CLAUDE_CODE_SESSION_ID`, which every
+Claude Code Bash invocation inherits -- no argument is needed for "how much has
+*this* session used".
 
 Optional flags:
 - `--session <id>` -- force a specific session instead of auto-detecting
@@ -46,10 +43,10 @@ Optional flags:
   category total across sessions)
 
 If the script reports the watcher isn't running, tell the user and offer to
-start it yourself: `node C:\projects\claude-token-monitor\packages\token-monitor-core\watcher.js` (best
-run in its own terminal, or backgrounded) -- it also starts (or reuses) the
-local llama.cpp server it depends on for session naming, so give it a few
-seconds before the first `status.json` appears.
+start it yourself: `node C:\projects\claude-token-monitor\packages\token-monitor-core\watcher.js`
+(best run in its own terminal, or backgrounded). It also starts or reuses the
+local llama.cpp server it uses for session naming, so give it a few seconds
+before the first `status.json` appears.
 
 ## When to use this
 

@@ -182,8 +182,6 @@ function main() {
   if (unattributed > 0) console.log(`note: ${unattributed} session(s) had turns with no cwd at all (see the (unattributed) row)`);
 }
 
-// Home/workspace prefixes are the same on every row and just push the
-// interesting tail off the terminal.
 function shortenPath(s) {
   return s.replace(/^C:\\projects\\/i, '~p\\').replace(/^C:\\projects$/i, '~p').replace(new RegExp(`^${process.env.USERPROFILE ? process.env.USERPROFILE.replace(/[\\^$*+?.()|[\]{}]/g, '\\$&') : '\u0000'}`, 'i'), '~');
 }

@@ -1,10 +1,7 @@
 'use strict';
 
-// Starts the watcher on demand, from the status line. Never starts a
-// llama-server -- that is the watcher's job.
-//
-// Runs ~10x/second per open session, so the already-running path must stay two
-// syscalls. See CLAUDE.md "The status line starts the watcher".
+// Never starts a llama-server, and the already-running path must stay two
+// syscalls -- see CLAUDE.md "The status line starts the watcher".
 
 const fs = require('fs');
 const path = require('path');
@@ -15,8 +12,8 @@ const LOCK_FILE = path.join(cfg.STATE_DIR, 'watcher.lock');
 const STAMP_FILE = path.join(cfg.STATE_DIR, 'watcher-spawn.json');
 const WATCHER_JS = path.join(__dirname, '..', 'watcher.js');
 
-// An out-of-process pause button. An env var cannot serve here: Claude Code
-// spawns the status line itself, so there is nowhere for a user to set one.
+// A file, not an env var: Claude Code spawns the status line itself, so there
+// is nowhere for a user to set one.
 const DISABLE_FILE = path.join(cfg.STATE_DIR, 'autostart.disabled');
 
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -31,7 +28,6 @@ function isPidAlive(pid) {
   }
 }
 
-// The watcher's own PID lock, not a second source of truth.
 function watcherPid() {
   try {
     const pid = Number(fs.readFileSync(LOCK_FILE, 'utf8').trim());
@@ -53,15 +49,11 @@ function writeStamp(stamp) {
   try {
     fs.mkdirSync(cfg.STATE_DIR, { recursive: true });
     fs.writeFileSync(STAMP_FILE, JSON.stringify(stamp));
-  } catch {
-    /* the status line must render regardless */
-  }
+  } catch {}
 }
 
-// Detached because the watcher must outlive the ~100ms render that starts it.
-// A detached child can silently fail to launch on Windows, so this is verified
-// rather than trusted -- the next render checks the lock, and the failure
-// counter notices a child that never appeared.
+// A detached child can silently fail to launch on Windows, so a pid here is
+// never taken as proof: the next render checks the lock instead.
 function spawnWatcher() {
   const child = spawn(process.execPath, [WATCHER_JS], {
     detached: true,
@@ -69,22 +61,17 @@ function spawnWatcher() {
     windowsHide: true,
     cwd: path.dirname(WATCHER_JS),
   });
-  child.on('error', () => {
-    /* never throw into a render; the next one sees no lock */
-  });
+  child.on('error', () => {});
   child.unref();
   return child.pid || null;
 }
 
 // -> 'running' | 'starting' | 'cooldown' | 'failed' | 'disabled'
-//
 // Never throws: a status line that crashes prints a stack trace ten times a
-// second, so every failure degrades to a word instead.
+// second.
 function ensureWatcher() {
   try {
     if (watcherPid()) {
-      // Cleared on observed success only, so a run of failures survives
-      // until a watcher genuinely comes up.
       const stamp = readStamp();
       if (stamp.failures) writeStamp({});
       return 'running';
@@ -99,8 +86,8 @@ function ensureWatcher() {
       return (stamp.failures || 0) >= MAX_CONSECUTIVE_FAILURES ? 'failed' : 'starting';
     }
 
-    // Cooldown expired with no lock: the previous attempt failed. Counting it
-    // before retrying is what makes a broken install converge on 'failed'.
+    // Cooldown expired with no lock means the previous attempt failed; count
+    // it before retrying, or a broken install never converges on 'failed'.
     const failures = (stamp.at_ms ? stamp.failures || 0 : 0) + (stamp.at_ms ? 1 : 0);
     if (failures >= MAX_CONSECUTIVE_FAILURES) {
       writeStamp({ at_ms: Date.now(), failures });

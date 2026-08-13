@@ -34,8 +34,6 @@ local function total_tokens(t)
   return (t.context or 0) + (t.cache_write or 0) + (t.cache_read or 0) + (t.thinking or 0) + (t.writing or 0) + (t.tool_calls or 0)
 end
 
--- No classified turns yet (cold start, llama-server unreachable) must render
--- as a plain number, not 0%.
 local function fmt_thinking(thinking, sem)
   local classified = sem and ((sem.thinking_productive or 0) + (sem.thinking_wasted or 0)) or 0
   if classified < 1 then
@@ -45,7 +43,6 @@ local function fmt_thinking(thinking, sem)
   return string.format("thk %s (%d%%p)", M.fmt_num(thinking), pct)
 end
 
--- "<tokens>-<cost>" per agent, in the order the Claude Code UI shows them.
 local function agent_pairs(agents)
   if not agents or #agents == 0 then
     return nil
@@ -67,8 +64,6 @@ local function active_breakdown(s)
   return tail
 end
 
---- Ordered {text, hl} segments -- the shared shape the native-statusline
---- renderer and the lualine component each flatten differently.
 function M.build_segments(selection, opts)
   local icons = opts.icons
   local hl = opts.highlights
@@ -89,8 +84,7 @@ function M.build_segments(selection, opts)
     if #segments > 0 then
       table.insert(segments, { text = icons.separator, hl = hl.dim })
     end
-    -- Count badge ("3A") rather than the agent list -- see CLAUDE.md
-    -- "Only the active session gets agent detail".
+    -- see CLAUDE.md "Only the active session gets agent detail"
     local badge = (s.agents and #s.agents > 0) and (" " .. #s.agents .. "A") or ""
     table.insert(segments, { text = s.name .. badge .. " " .. M.fmt_cost_short(s.totals.cost_usd), hl = hl.dim })
     grand_total = grand_total + s.totals.cost_usd
@@ -104,7 +98,6 @@ function M.build_segments(selection, opts)
   return segments
 end
 
---- For vim.o.statusline / vim.o.winbar: %#Group#text%* segments concatenated.
 function M.statusline_string(selection, opts)
   local segments = M.build_segments(selection, opts)
   if #segments == 0 then
@@ -117,8 +110,6 @@ function M.statusline_string(selection, opts)
   return table.concat(parts)
 end
 
---- For lualine or anywhere else wanting plain text with no statusline
---- escape codes.
 function M.plain_string(selection, opts)
   local segments = M.build_segments(selection, opts)
   if #segments == 0 then

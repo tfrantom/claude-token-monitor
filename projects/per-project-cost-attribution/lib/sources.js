@@ -4,8 +4,6 @@ const fs = require('fs');
 const path = require('path');
 const cfg = require('../config');
 
-// Every transcript on disk, not just the active ones the watcher looks at:
-// attribution is a look-back question, so the default scope is all history.
 function findTranscripts({ since = null, project = null } = {}) {
   const out = [];
   let dirs;
@@ -47,9 +45,6 @@ function findTranscripts({ since = null, project = null } = {}) {
   return out.sort((a, b) => a.mtimeMs - b.mtimeMs);
 }
 
-// Sidechain transcripts at `<projects>/<claude-project>/<session-id>/
-// subagents/agent-*.jsonl`, each with an `agent-*.meta.json` naming the agent
-// type and the task it was spawned for.
 function findSubagents(sessionDir) {
   const dir = path.join(sessionDir, 'subagents');
   let files;
@@ -65,7 +60,7 @@ function findSubagents(sessionDir) {
     let meta = {};
     try {
       meta = JSON.parse(fs.readFileSync(path.join(dir, `${id}.meta.json`), 'utf8'));
-    } catch { /* meta is a nicety, not a requirement */ }
+    } catch { }
     agents.push({
       path: path.join(dir, f),
       agent: id,
@@ -76,9 +71,6 @@ function findSubagents(sessionDir) {
   return agents;
 }
 
-// Read-only and optional: the `ended` flag (a PID-registry cross-reference,
-// far more reliable than mtime staleness) and the auto-generated name, for
-// sessions currently in the active window.
 function loadStatus() {
   try {
     const raw = JSON.parse(fs.readFileSync(cfg.STATUS_FILE, 'utf8'));

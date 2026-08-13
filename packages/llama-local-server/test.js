@@ -1,12 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-// Offline checks: nothing here spawns llama-server, makes a network call, or
-// touches the machine's real runtime dir -- LLAMA_RUNTIME_DIR is redirected at
-// a mkdtemp dir before anything is required. End-to-end coverage is
-// ../token-monitor-core/test-lifecycle.js.
-//
-//   node test.js
+// Offline checks. LLAMA_RUNTIME_DIR is redirected before anything below is
+// required, or these would write to the machine's real runtime dir.
 
 const assert = require('assert');
 const fs = require('fs');
@@ -47,11 +43,6 @@ async function checkAsync(name, fn) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// netstat parsing -- the check that stops a kill landing on the wrong process
-// ---------------------------------------------------------------------------
-
-// Captured from a real `netstat -ano -p tcp` while the suite was running.
 const NETSTAT = [
   'Active Connections',
   '',
@@ -69,7 +60,6 @@ check('parses the LISTENING pid for a port', () => {
 });
 
 check('ignores ESTABLISHED rows, which carry the client pid', () => {
-  // 22952 is the watcher talking to the server, not llama-server.
   assert.notStrictEqual(managed.parseNetstatListener(NETSTAT, 8090), 22952);
 });
 
@@ -86,10 +76,6 @@ check('returns null on garbage rather than throwing', () => {
   assert.strictEqual(managed.parseNetstatListener('', 8090), null);
   assert.strictEqual(managed.parseNetstatListener('not netstat output', 8090), null);
 });
-
-// ---------------------------------------------------------------------------
-// the ownership record
-// ---------------------------------------------------------------------------
 
 check('record round-trips and clears', () => {
   assert.strictEqual(managed.readRecord(), null, 'expected no record in a fresh runtime dir');
@@ -117,16 +103,12 @@ check('sharedStatus reports a dead recorded pid as not alive', () => {
   managed.clearRecord();
 });
 
-// ---------------------------------------------------------------------------
-// stopShared's refusals -- the safety half
-// ---------------------------------------------------------------------------
-
 async function asyncChecks() {
   await checkAsync('stopShared does nothing when there is no record', async () => {
     managed.clearRecord();
     const r = await managed.stopShared({ reason: 'test' });
     assert.strictEqual(r.stopped, false);
-    // Either message is fine depending on whether this machine has a server up
+    // Either message, depending on whether a server is up on this machine
     // right now; both mean "did not kill anything".
     assert.match(r.reason, /no managed instance recorded|unmanaged llama-server/);
   });
@@ -140,7 +122,6 @@ async function asyncChecks() {
   });
 
   await checkAsync('stopShared refuses to kill a live pid that does not hold the port', async () => {
-    // The recycled-pid case: alive, but emphatically not llama-server.
     const foreign = liveForeignPid();
     managed.writeRecord('chat-shared', { pid: foreign, port: 8090 });
     const r = await managed.stopShared({ reason: 'test' });
@@ -149,10 +130,6 @@ async function asyncChecks() {
     managed.clearRecord();
   });
 }
-
-// ---------------------------------------------------------------------------
-// the spawn lock
-// ---------------------------------------------------------------------------
 
 check('the spawn lock is re-entrant for the holder', () => {
   assert.strictEqual(managed.acquireSpawnLock('chat-shared'), true);
@@ -187,10 +164,6 @@ check('releasing a lock held by someone else is a no-op', () => {
   assert.ok(fs.existsSync(lockPath), 'released a lock belonging to another process');
   fs.unlinkSync(lockPath);
 });
-
-// ---------------------------------------------------------------------------
-// the registry: many instances, two reap policies
-// ---------------------------------------------------------------------------
 
 const MIN = 60 * 1000;
 
@@ -257,7 +230,6 @@ check('touch refreshes last_used_at, and throttles repeat writes', () => {
   const first = managed.readRecord('touch-test').last_used_at;
   assert.ok(Date.now() - Date.parse(first) < 5000, 'touch should have written a fresh timestamp');
 
-  // Immediately again: inside the throttle window, so the timestamp must not move.
   managed.touch('touch-test');
   assert.strictEqual(managed.readRecord('touch-test').last_used_at, first);
   managed.clearRecord('touch-test');
@@ -267,8 +239,7 @@ check('touch on an unknown claim is a no-op, not a crash', () => {
   assert.strictEqual(managed.touch('never-recorded'), false);
 });
 
-// Sequenced, not fired off at top level: these write and delete records in a
-// shared directory, so concurrency would make the suite flaky.
+// Sequenced, never concurrent: these share one records directory.
 async function registryAsyncChecks() {
   await checkAsync('reap clears records whose process is gone', async () => {
     managed.writeRecord('dead-one', idleRec({ pid: 999_999 }));
@@ -281,7 +252,6 @@ async function registryAsyncChecks() {
   });
 
   await checkAsync('reap will not kill a live pid that does not hold the port', async () => {
-    // Reapable by policy, but stopManaged's port check must still veto it.
     const foreign = liveForeignPid();
     managed.writeRecord('idle-but-foreign', idleRec({ pid: foreign, port: 8099 }));
     await managed.reap();
@@ -308,10 +278,6 @@ check('statusAll reports liveness and idle age per instance', () => {
   assert.ok(row.idle_ms >= 2 * MIN - 5000, `idle_ms looks wrong: ${row.idle_ms}`);
   managed.clearRecord('status-test');
 });
-
-// ---------------------------------------------------------------------------
-// config resolution
-// ---------------------------------------------------------------------------
 
 check('resolveOllamaModel reads a manifest and returns the blob path', () => {
   const models = path.join(tmp, 'ollama');
@@ -355,13 +321,10 @@ check('a manifest with no model layer resolves to null, not to a license blob', 
 });
 
 check('the chat-shared claim and the resolved port agree', () => {
-  // ports.js validates this on require, so reaching here already proves it.
   assert.strictEqual(ports.get('chat-shared').port, cfg.LLAMA_PORT);
 });
 
 check('the runtime dir is not inside the repo', () => {
-  // Machine-level so installed skill copies can find it; a repo-relative path
-  // would silently stop them coordinating.
   const repoRoot = path.resolve(__dirname, '..', '..');
   const rel = path.relative(repoRoot, path.join(__dirname, '..', '..', 'x'));
   assert.ok(rel, 'sanity');
@@ -378,15 +341,11 @@ asyncChecks()
     for (const p of sleepers) {
       try {
         p.kill();
-      } catch {
-        /* already gone */
-      }
+      } catch {}
     }
     try {
       fs.rmSync(tmp, { recursive: true, force: true });
-    } catch {
-      /* temp dir left behind is not a failure */
-    }
+    } catch {}
 
     if (failures.length) {
       console.log(`llama-local-server: ${passed} passed, ${failures.length} FAILED`);

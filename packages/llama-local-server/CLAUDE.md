@@ -6,6 +6,49 @@ infrastructure in the suite — everything else is a client of it. It depends on
 nothing else here. See [`README.md`](README.md) and the [suite
 CLAUDE.md](../../CLAUDE.md).
 
+## API
+
+### `server.js` — start or reuse
+
+| Function | Returns | Notes |
+|---|---|---|
+| `ensureRunning(opts)` | `{ owned, proc, baseUrl }` | Reuses whatever is already on the port. `owned` is true only if *this* call started it, and `proc` comes back only then. |
+| `ensureRunningFor(name, opts)` | same | Takes the port from `ports.js` by claim name and checks availability *before* spawning. Preferred for anything but the shared instance. |
+| `isUp(port, host)` | `boolean` | One `/health` request. |
+| `baseUrlFor(port, host)` | `string` | |
+| `BASE_URL` | `string` | The default instance's URL. |
+
+`opts`: `{ host, port, modelPath, exePath, alias, contextSize, gpuLayers,
+extraArgs, detached, timeoutMs }`. Every option defaults to the shared chat
+instance on 8090, so `ensureRunning()` with no arguments is the common case.
+
+`detached: false` (the default) means the child dies with the parent, which is
+right for a long-lived daemon. One-shot CLI callers want `true`, or the server
+dies on every process exit and each invocation re-pays the model load.
+
+A null `modelPath` is rejected before `spawn()`. Unchecked it reaches the
+command line as `-m null`, `llama-server` exits immediately, and it surfaces as
+the health loop's useless "did not become healthy after 30s". A bad `exePath`
+fails the same way fast — the `'error'` event is captured and re-thrown as
+`failed to start llama-server (<path>): <reason>` in about a second.
+
+### `managed.js` — lifecycle across processes
+
+| Function | Notes |
+|---|---|
+| `ensureManaged(name, opts)` | Start-or-reuse the instance for a claim and record ownership. Returns `{ claim, baseUrl, port, pid, started, managed }`; `managed` true means a record exists, so a reaper may stop it later. |
+| `ensureShared(opts)` | `ensureManaged('chat-shared')` — the shared chat instance on 8090. |
+| `touch(name)` | "Still wanted": restarts the idle clock. Throttled to one write per 30s. |
+| `reap(opts)` | Stop `idle` instances past their TTL, clear records whose process is gone. Safe to call from anywhere; the watcher calls it every tick. |
+| `stopManaged(name, opts)` | Stop one instance *if* this suite recorded starting it. Never throws. |
+| `stopShared(opts)` | `stopManaged('chat-shared')`. |
+| `stopAll(opts)` | Stop every managed instance. The watcher's shutdown path. |
+| `status(name)` / `statusAll()` | Recorded pid, liveness, policy, idle age. No network. |
+| `isUpFor(name)` | Whether the server is actually answering, as opposed to the pid merely existing. |
+
+`opts` for `ensureManaged`: `startedBy`, `waitMs`, `policy`, `idleTtlMs`, plus
+anything `ensureRunning` takes.
+
 ## Use `ensureRunning`, never your own spawn
 
 Copying the spawn logic is the mistake this package exists to prevent. Every
@@ -125,6 +168,41 @@ hold neighbouring ports, which is why `suggestPort()` probes TCP before
 suggesting anything, and why `assertAvailable()` names an occupant instead of
 letting `llama-server` fail to bind.
 
+| Port | Owner | Model / mode |
+|---|---|---|
+| 8090 | this package (shared) | `llama3.2` 3B Q4, chat, 4096 ctx, `-ngl 999` |
+| 8099 | **reserved** — held by a process outside this suite | — |
+
+Reserved ports live in `RESERVED` as data rather than as a comment so
+`suggestPort()` can honour them, and a claim that lands on one throws. A
+reserved port is reserved whether or not anything is listening today: nothing
+answering only means the squatter is between runs.
+
+### The fields of a claim
+
+| Field | Meaning |
+|---|---|
+| `port` | The claimed TCP port on `HOST`. |
+| `owner` | Repo-relative path of the code that spawns it. |
+| `alias` | The `-a` value the owner should pass, so the instance identifies itself in `/props` and `/v1/models`. Defaults to the claim name in `ensureRunningFor()`. |
+| `mode` | `'chat'` or `'embedding'`. `--embedding` is an exclusive server mode, which is the whole reason there is more than one port. |
+| `model` | A human label **only**. The authoritative model path stays in the owner's own config; identity checks compare against the path the *caller* is about to spawn with. |
+| `shared` | `true` = other code is expected to reuse this instance as-is and must never reconfigure it. |
+
+### What `inspect()` reports
+
+| `status` | Meaning for a spawner |
+|---|---|
+| `free` | Nothing is listening — spawning is safe. |
+| `ours` | A llama-server is up serving the model we expected. |
+| `llama` | A llama-server is up, but no expected path was given to check it against. Reuse is probably fine; verify the alias/model. |
+| `mismatch` | The dangerous one: a llama-server serving a **different** model. `ensureRunning()` would reuse it and silently answer from the wrong model. |
+| `foreign` | Something that is not a llama-server. Spawning here fails to bind. |
+
+There is no runtime model-switching within an instance: changing what 8090
+serves means setting `LLAMA_MODEL` (or `LLAMA_MODEL_PATH`) and restarting it. A
+consumer needing a different model gets its own instance instead.
+
 **Never `taskkill` by image name.** There are routinely several
 `llama-server.exe` processes and some belong to other sessions. Kill by PID or
 by port — `/PID`, never `/IM`, and never `/T` (llama-server has no children to
@@ -139,9 +217,20 @@ blob digest. Both are now resolved, in order: env var → `config.local.js`
 and `PATH` for the binary, and reads Ollama's manifest for `LLAMA_MODEL`
 (default `llama3.2:latest`) to find the GGUF.
 
-Use `resolveOllamaModel(ref)` rather than pasting a digest — a digest is
+Use `resolveOllamaModel(ref, { modelsDir })` rather than pasting a digest — a digest is
 correct on exactly one machine and fails as a file-not-found at spawn
-everywhere else.
+everywhere else. Ollama stores a pulled model as content-addressed blobs plus a
+manifest mapping a human reference onto them: the manifest is at
+`<models>/manifests/registry.ollama.ai/library/<name>/<tag>` for the official
+library namespace, and the blob it names is at `<models>/blobs/<digest>` with
+the digest's `:` replaced by `-`. Failing that, discovery takes the first
+`.gguf` in a `models/` dir, for people not using Ollama at all.
+
+Binary discovery covers the layouts a llama.cpp build actually produces — CMake
+on Windows puts binaries under `build/bin/<Config>/`, the Makefile build drops
+them in the repo root, the prebuilt release zips unpack flat — and then `PATH`.
+When even that comes up empty it returns the bare exe name rather than `null`,
+so the spawn's `'error'` event reports a path-shaped value.
 
 Nothing here throws when resolution fails; it yields `null` and the *spawn*
 reports it, naming the model reference and the `ollama pull` that would fix it.

@@ -3,20 +3,12 @@
   Suite-level installer for claude-token-monitor.
 
 .DESCRIPTION
-  Wires every external integration point to wherever this suite actually
-  lives. Nothing assumes C:\projects\claude-token-monitor -- the suite root is
-  derived from this script's own location, or passed explicitly, and every
-  generated path is built from it. Idempotent: re-run it after moving the
-  suite, which is the whole point.
+  Runs each packages\<x>\install.ps1 and projects\<x>\install.ps1, wiring
+  every external integration point to wherever this suite lives. Idempotent:
+  re-run it after moving the suite.
 
-  A pure discovery driver. Each packages\<x>\install.ps1 and
-  projects\<x>\install.ps1 is run, in that order, with no special cases here;
-  a new component installer following that convention is picked up with no
-  edit to this file.
-
-  Long-running processes -- the watcher, the optional project daemons, the
-  llama.cpp server instances -- are deliberately NOT started or managed here.
-  The last section reports what is running and how to start what isn't.
+  Starts nothing. The last section reports which background services are
+  running and how to start the ones that aren't.
 
 .PARAMETER SuiteRoot
   Override the auto-detected suite root (defaults to this script's directory).
@@ -44,7 +36,7 @@ $ErrorActionPreference = "Stop"
 
 if (-not $SuiteRoot) { $SuiteRoot = $PSScriptRoot }
 $SuiteRoot = (Resolve-Path $SuiteRoot).Path.TrimEnd('\', '/')
-$fwd = $SuiteRoot -replace '\\', '/'   # forward-slash form for JSON/Lua
+$fwd = $SuiteRoot -replace '\\', '/'
 
 $claudeDir = "$env:USERPROFILE\.claude"
 
@@ -54,7 +46,6 @@ Write-Host "======================================="
 Write-Host "Suite root: $SuiteRoot"
 Write-Host ""
 
-# ---------------------------------------------------------------- prereqs --
 Write-Host "Checking prerequisites..."
 
 if (Get-Command node -ErrorAction SilentlyContinue) {
@@ -63,11 +54,7 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
     Write-Warning "  node.exe not on PATH -- the watcher and skill lookup both need it."
 }
 
-# config.js resolves the llama.cpp binary and the GGUF (env var ->
-# config.local.js -> discovery), so ask it what it resolved rather than
-# parsing it -- running the file is the only way to get the answer the watcher
-# will get. A miss is a warning, not a failure: an env var set later wins.
-$llamaCfg = Join-Path $SuiteRoot "packages\llama-local-server\config.js"
+$llamaCfg =Join-Path $SuiteRoot "packages\llama-local-server\config.js"
 if ((Test-Path $llamaCfg) -and (Get-Command node -ErrorAction SilentlyContinue)) {
     $json = & node -e "const p=require('path');const c=require(p.resolve(process.argv[1]));process.stdout.write(JSON.stringify({exe:c.LLAMA_SERVER_EXE,model:c.LLAMA_MODEL_PATH,ref:c.LLAMA_MODEL}))" $llamaCfg 2>$null
     if ($LASTEXITCODE -eq 0 -and $json) {
@@ -92,18 +79,8 @@ if ((Test-Path $llamaCfg) -and (Get-Command node -ErrorAction SilentlyContinue))
     }
 }
 
-# ------------------------------------------------------------ components ---
-# Discovered, not hardcoded. The convention a component installer must follow
-# to be picked up:
-#   * install.ps1 at the component root (packages\<x>\ or projects\<x>\)
-#   * idempotent -- this whole script is re-run whenever the suite moves
-#   * optionally takes -SuiteRoot; it's passed when the parameter exists
-#   * self-skip rather than fail when its integration target is absent (see
-#     token-monitor.nvim, which returns early on a machine with no Neovim)
 $failedComponents = @()
 
-# -SkipNvim / -SkipStatusLine suppress the component that owns each
-# integration, so the switches keep meaning what they always meant.
 $skipComponentNames = @()
 if ($SkipStatusLine) { $skipComponentNames += 'token-monitor-core' }
 if ($SkipNvim)       { $skipComponentNames += 'token-monitor.nvim' }
@@ -138,10 +115,7 @@ if (-not $SkipComponents) {
         Write-Host ""
         Write-Host "  --- $label"
 
-        # These are independent integrations, so one failing must not abort
-        # the rest. Failures are collected and reported at the end.
         try {
-            # Get-Command parses the script to answer this; it does not run it.
             $takesSuiteRoot = $false
             try {
                 $takesSuiteRoot = (Get-Command -Name $installer -CommandType ExternalScript -ErrorAction Stop).Parameters.ContainsKey('SuiteRoot')
@@ -158,14 +132,6 @@ if (-not $SkipComponents) {
     }
 }
 
-# -------------------------------------------------------------- services ---
-# Reported, never managed -- nothing below changes any state. Starting the
-# standing processes here would be redundant and could contend with a client
-# mid-spawn: the watcher starts itself on the next status line render and
-# stops itself once no session is live, and the llama.cpp instances are
-# spawned on demand and stopped with it. "not listening" is the normal resting
-# state. It would also make this script own an uninstall story it does not
-# need, when today it only ever writes config and stops.
 Write-Host ""
 Write-Host "Background services (this installer does not start or manage these)"
 
@@ -187,13 +153,9 @@ $daemons = @(
 
 foreach ($d in $daemons) {
     $abs = Join-Path $SuiteRoot $d.Rel
-    if (-not (Test-Path $abs)) { continue }   # component not present in this copy
-    # Both launch styles count as running: path-qualified (matched on the
-    # trailing <dir>\<script>) and bare `node watcher.js` from its own cwd
-    # (matched on the script name as a standalone argument). Win32_Process
-    # exposes no cwd, so a same-named script elsewhere also reads as up --
-    # acceptable for a report that starts nothing.
-    $leaf    = Split-Path $d.Rel -Leaf
+    if (-not (Test-Path $abs)) { continue }
+    # Matches a path-qualified launch or a bare `node watcher.js`; Win32_Process exposes no cwd.
+    $leaf    =Split-Path $d.Rel -Leaf
     $dirLeaf = Split-Path (Split-Path $d.Rel -Parent) -Leaf
     $bare    = '(?i)(^|[\s"])(\.\\)?' + [regex]::Escape($leaf) + '("|\s|$)'
     $up = @($nodeCmdLines | Where-Object { $_ -like "*$dirLeaf\$leaf*" -or $_ -match $bare }).Count -gt 0
@@ -204,11 +166,7 @@ foreach ($d in $daemons) {
     }
 }
 
-# Ports are informational only: these are spawned on demand by whichever
-# client needs them, so "down" here is not a problem to fix.
 if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
-    # Read from the port registry rather than restated here, so this can never
-    # disagree with what the code uses.
     $ports = @()
     $portsJson = & node -e "const p=require('path');const r=require(p.resolve(process.argv[1]));process.stdout.write(JSON.stringify(r.list().map(c=>({Port:c.port,What:c.owner+' -- '+c.model}))))" (Join-Path $SuiteRoot "packages\llama-local-server\ports.js") 2>$null
     if ($LASTEXITCODE -eq 0 -and $portsJson) {
@@ -225,9 +183,6 @@ if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
     Write-Host "         llama-server instances start on demand and stop with the watcher -- [----] is normal."
 }
 
-# ------------------------------------------------------- not managed here --
-# Steps that exist but can't be automated from inside this suite. Only
-# mentioned when the component is actually present.
 $manual = @()
 if (Test-Path (Join-Path $SuiteRoot "projects\ask-question-prefilter")) {
     $manual += "ask-question-prefilter is inert until bug-me-claude's own SKILL.md points at it (a cross-project edit, then re-run bug-me-claude's install.ps1). See projects/ask-question-prefilter/proposed/."
@@ -238,7 +193,6 @@ if ($manual) {
     foreach ($m in $manual) { Write-Host "  - $m" }
 }
 
-# ------------------------------------------------------------------ done ---
 Write-Host ""
 Write-Host "======================================="
 if ($failedComponents) {

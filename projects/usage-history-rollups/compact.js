@@ -1,18 +1,9 @@
 'use strict';
 
-// Retention for history.jsonl: for any UTC day older than --keep-days
-// (default 7), keep only the LAST snapshot per session per day. Recent days
-// are untouched. Dry run unless --apply.
+// Keeps the LAST snapshot per session per day, never the first -- see
+// CLAUDE.md "Retention".
 //
-// Last-per-session-per-day is the specific choice that makes this lossless at
-// daily resolution: entries are cumulative and report.js differences
-// consecutive ones, so keeping each session's value at each day boundary
-// leaves all daily and coarser totals bit-for-bit correct. Keeping the first
-// entry of a day instead would corrupt the differencing.
-//
-//   node compact.js                    # show what would be dropped
-//   node compact.js --apply
-//   node compact.js --keep-days 30 --apply
+//   node compact.js [--keep-days 30] [--apply]
 
 const fs = require('fs');
 const cfg = require('./config');
@@ -29,8 +20,7 @@ function parseArgs(argv) {
 
 function compact(entries, cutoffMs) {
   const kept = [];
-  // For old entries, index the last one per (session, UTC day). Entries are
-  // appended in time order, so a later match simply overwrites an earlier one.
+  // Entries arrive in time order, so a later match overwrites an earlier one.
   const lastPerSessionDay = new Map();
   for (const e of entries) {
     const t = Date.parse(e.ts);
@@ -66,9 +56,6 @@ function main() {
     console.log('  nothing to do');
     return;
   }
-  // Temp + rename so an interrupted compaction can't leave a truncated
-  // history behind. The .bak is a one-generation undo -- this is the only
-  // operation in the project that deletes data.
   const tmp = `${cfg.HISTORY_FILE}.tmp`;
   fs.writeFileSync(tmp, result.map((e) => JSON.stringify(e)).join('\n') + '\n');
   fs.copyFileSync(cfg.HISTORY_FILE, `${cfg.HISTORY_FILE}.bak`);

@@ -4,13 +4,10 @@ local format = require("claude-token-monitor.format")
 
 local M = {}
 
--- Written by the timer, read by the statusline functions: those run on every
--- redraw and must never touch disk.
+-- The statusline functions run on every redraw and must only read this cache.
 local cache = { statusline = "", plain = "", selection = { active = nil, others = {} } }
 
 local timer = nil
--- Which bar we last wrote, so a later setup() with a different position
--- clears only ours.
 local last_position = nil
 
 local SEGMENT_EXPR = "%{%v:lua.require('claude-token-monitor').get_statusline()%}"
@@ -23,15 +20,12 @@ local function apply_position(position)
   if position == "winbar" then
     vim.o.winbar = SEGMENT_EXPR
   else
-    -- laststatus=2 so the statusline still renders with a single window open.
     vim.o.laststatus = 2
     vim.o.statusline = "%f %h%m%r%=" .. SEGMENT_EXPR .. "  %l:%c %p%%"
   end
   last_position = position
 end
 
--- default = true and links, never literal colors: the user's colorscheme
--- must stay in charge of the palette.
 local function define_highlights(hl)
   vim.api.nvim_set_hl(0, hl.active_name, { link = "Title", default = true })
   vim.api.nvim_set_hl(0, hl.active_cost, { link = "Number", default = true })
@@ -47,18 +41,14 @@ function M.refresh()
   cache.plain = format.plain_string(selection, opts)
 end
 
---- For vim.o.statusline / vim.o.winbar, e.g.:
----   vim.o.statusline = "%{%v:lua.require('claude-token-monitor').get_statusline()%}"
 function M.get_statusline()
   return cache.statusline
 end
 
---- Plain text, no inline highlight codes.
 function M.get_plain()
   return cache.plain
 end
 
---- lualine component: { require("claude-token-monitor").lualine_component() }
 function M.lualine_component()
   return function()
     return M.get_plain()

@@ -1,6 +1,17 @@
+<#
+.SYNOPSIS
+  Installs the local-inference skill into ~/.claude/skills/local-inference/.
+
+.DESCRIPTION
+  Copies SKILL.md and scripts/ into place, writes a config.json with the
+  resolved llama.cpp paths, and inserts or updates a marked block in
+  ~/.claude/CLAUDE.md. Idempotent -- re-run it after editing any source file
+  or moving the suite.
+
+.PARAMETER SuiteRoot
+  Override the auto-detected suite root (defaults to two levels up).
+#>
 param(
-    # Defaults to two levels up from this script. Override when installing a
-    # copy that doesn't sit at its usual place inside the suite.
     [string]$SuiteRoot
 )
 
@@ -10,7 +21,7 @@ $claudeDir  = "$env:USERPROFILE\.claude"
 $skillDir   = "$claudeDir\skills\local-inference"
 $scriptsDir = "$skillDir\scripts"
 $libDir     = "$scriptsDir\lib"
-$scriptRoot = $PSScriptRoot  # .../projects/local-inference-skill
+$scriptRoot = $PSScriptRoot
 
 if (-not $SuiteRoot) {
     $SuiteRoot = Split-Path (Split-Path $scriptRoot -Parent) -Parent
@@ -42,20 +53,13 @@ foreach ($s in @("classify.js", "extract.js", "summarize.js")) {
 Copy-Item (Join-Path $scriptRoot "scripts\lib\local-client.js") "$libDir\local-client.js" -Force
 Write-Host "  Copied lib\local-client.js -> $libDir\local-client.js"
 
-# The installed copy has no relative path back to the suite, and the llama.cpp
-# exe / GGUF locations are machine-specific anyway. Both are resolved here and
-# written alongside the skill. Env vars still win at runtime.
 $llamaCfgPath = Join-Path $SuiteRoot "packages\llama-local-server\config.js"
 $llamaHost = "127.0.0.1"; $llamaPort = 8090
 $llamaExe = ""; $llamaModel = ""
 
-# Ask config.js what it resolves to rather than parsing it: those values are
-# resolvers now, not string literals, so there is nothing left to scrape --
-# and running the file is the only way to get the answer the watcher will get.
 if (Test-Path $llamaCfgPath) {
-    # path.resolve, because require() treats a bare relative path as a module
-    # name rather than a file.
-    $json = & node -e "const p=require('path');const c=require(p.resolve(process.argv[1]));process.stdout.write(JSON.stringify({host:c.LLAMA_HOST,port:c.LLAMA_PORT,exe:c.LLAMA_SERVER_EXE,model:c.LLAMA_MODEL_PATH,ref:c.LLAMA_MODEL}))" $llamaCfgPath 2>$null
+    # path.resolve, or require() reads the bare path as a module name.
+    $json =& node -e "const p=require('path');const c=require(p.resolve(process.argv[1]));process.stdout.write(JSON.stringify({host:c.LLAMA_HOST,port:c.LLAMA_PORT,exe:c.LLAMA_SERVER_EXE,model:c.LLAMA_MODEL_PATH,ref:c.LLAMA_MODEL}))" $llamaCfgPath 2>$null
     if ($LASTEXITCODE -eq 0 -and $json) {
         $resolved = $json | ConvertFrom-Json
         $llamaHost  = $resolved.host
@@ -69,8 +73,7 @@ if (Test-Path $llamaCfgPath) {
     Write-Warning "  $llamaCfgPath not found -- config.json will rely on runtime discovery."
 }
 
-# Empty rather than wrong: local-client.js does its own discovery when a value
-# is absent, so a known-bad path is worse than none.
+# Empty rather than wrong: local-client.js rediscovers an absent value.
 if (-not $llamaExe -or -not (Test-Path $llamaExe)) {
     Write-Warning "  llama-server.exe not found -- build llama.cpp, or set the LLAMA_SERVER_EXE env var."
     $llamaExe = ""
@@ -87,14 +90,11 @@ $skillConfig = [ordered]@{
     llamaServerExe = $llamaExe
     llamaModelPath = $llamaModel
 }
-# NOT Set-Content -Encoding utf8, which writes a BOM that JSON.parse rejects.
-# See ../CLAUDE.md "PowerShell 5.1 traps".
+# No-BOM, and never Set-Content -Encoding utf8 -- see ../CLAUDE.md "PowerShell 5.1 traps"
 [System.IO.File]::WriteAllText("$skillDir\config.json", ($skillConfig | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
 Write-Host "  Wrote config.json -> $skillDir\config.json"
 
-# Re-running updates the marked block in place rather than appending a
-# duplicate. Double-quoted here-string so $SuiteRoot interpolates; the
-# backticks below are escaped so they survive as literal markdown.
+# Double-quoted here-string, so the markdown backticks below must stay doubled.
 $claudeMdPath = "$claudeDir\CLAUDE.md"
 $startMarker  = "<!-- local-inference-skill:start -->"
 $endMarker    = "<!-- local-inference-skill:end -->"
@@ -112,9 +112,7 @@ prose.
 <!-- local-inference-skill:end -->
 "@
 
-# -Encoding UTF8 is mandatory on the read: 5.1 otherwise decodes a BOM-less
-# file as the system codepage and mangles every em-dash, which then gets
-# written straight back out.
+# -Encoding UTF8 is mandatory on read too -- see ../CLAUDE.md "PowerShell 5.1 traps"
 $content = if (Test-Path $claudeMdPath) { Get-Content $claudeMdPath -Raw -Encoding UTF8 } else { "" }
 
 if ($content -match [regex]::Escape($startMarker)) {
@@ -130,9 +128,6 @@ if ($content -match [regex]::Escape($startMarker)) {
     Write-Host "Appended local-inference block to $claudeMdPath"
 }
 
-# Same no-BOM rule as config.json above, and it matters more here: a BOM
-# written into ~/.claude/CLAUDE.md is round-tripped by the next run's read, so
-# it never cleans itself up.
 [System.IO.File]::WriteAllText($claudeMdPath, $content, (New-Object System.Text.UTF8Encoding($false)))
 
 Write-Host ""

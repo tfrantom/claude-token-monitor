@@ -1,10 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-// Offline checks for token-monitor-core: no network, no LLM, no watcher, and
-// nothing under the real state/ is read or written.
-//
-//   node packages/token-monitor-core/test.js
+// Offline checks: no network, no LLM, no watcher, and nothing under the real
+// state/ is read or written.
 
 const assert = require('assert');
 const fs = require('fs');
@@ -12,8 +10,7 @@ const os = require('os');
 const path = require('path');
 
 // Redirected BEFORE anything requires ./config: the supervisor checks below
-// write real lock and stamp files, which would otherwise fight the live
-// watcher.
+// write lock and stamp files, which would otherwise fight the live watcher.
 const stateTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tmc-core-state-'));
 process.env.TOKEN_MONITOR_STATE_DIR = stateTmp;
 
@@ -41,7 +38,6 @@ function fixture(name, lines) {
   return p;
 }
 
-// A turn with only output tokens, so cost == output_tokens * outputRate.
 function outputOnly(model, outputTokens, extra = {}) {
   return {
     model,
@@ -54,10 +50,8 @@ function outputOnly(model, outputTokens, extra = {}) {
   };
 }
 
-const AUG = Date.parse('2026-08-07T12:00:00Z'); // inside Sonnet 5 intro window
+const AUG = Date.parse('2026-08-07T12:00:00Z'); // inside Sonnet 5's intro window
 const SEP = Date.parse('2026-09-15T12:00:00Z'); // after it closes
-
-// -------------------------------------------------------------- pricing --
 
 check('model ids resolve to the right rate card entry', () => {
   assert.strictEqual(priceFor('claude-opus-5').name, 'Claude Opus 5');
@@ -129,8 +123,6 @@ check('an unknown model is reported unpriced rather than counted as free', () =>
   assert.strictEqual(r.priced, false);
 });
 
-// ----------------------------------------------------------- transcript --
-
 const ASSISTANT_USAGE = {
   input_tokens: 100,
   output_tokens: 1000,
@@ -140,8 +132,6 @@ const ASSISTANT_USAGE = {
 };
 
 check('usage is counted once per message.id, not once per content-block line', () => {
-  // One turn, three lines, each repeating the same usage: per-line counting
-  // would treble every number.
   const p = fixture('multiblock.jsonl', [
     { type: 'user', timestamp: '2026-08-07T12:00:00Z', message: { content: 'do a thing for me please' } },
     { type: 'assistant', timestamp: '2026-08-07T12:00:01Z', message: { id: 'm1', model: 'claude-opus-5', usage: ASSISTANT_USAGE, content: [{ type: 'thinking', thinking: 'hmm' }] } },
@@ -201,7 +191,7 @@ check('a malformed line is skipped without losing the rest of the file', () => {
   const p = path.join(tmp, 'torn.jsonl');
   fs.writeFileSync(p, [
     JSON.stringify({ type: 'user', timestamp: '2026-08-07T12:00:00Z', message: { content: 'a genuine user message here' } }),
-    '{"type":"assistant","message":{"id":"m1",', // torn write, mid-flush
+    '{"type":"assistant","message":{"id":"m1",',
     JSON.stringify({ type: 'user', timestamp: '2026-08-07T12:00:02Z', message: { content: 'a second genuine message' } }),
   ].join('\n'));
   assert.strictEqual(classifySession(p).userTexts.length, 2);
@@ -220,8 +210,6 @@ check('fast-mode turns in a transcript reach the pricing layer', () => {
   const fastCost = classifySession(mk(fast)).totals.cost_usd;
   assert.ok(fastCost > stdCost * 1.9, `fast (${fastCost}) should be ~2x standard (${stdCost})`);
 });
-
-// ----------------------------------------------------------- statusline --
 
 function session(over = {}) {
   return {
@@ -254,7 +242,6 @@ check('the active session sorts first and shows its agent breakdown', () => {
     },
   }));
   assert.ok(out.indexOf('Mine') < out.indexOf('Test Session'), 'active session leads even when older');
-  // "1k-0.5" == 1000 tokens / $0.50, with fmtK's trailing ".0" dropped.
   assert.ok(out.includes('1k-0.5'), `active session renders its per-agent breakdown, got: ${out}`);
 });
 
@@ -291,8 +278,6 @@ check('number formatting drops the noise decimal above 10', () => {
   assert.strictEqual(fmtCostShort(42.7), '$43');
 });
 
-// -------------------------------------------------------- session names --
-
 check('sameTopic ignores generic scaffolding words', () => {
   assert.ok(!sameTopic('Debugging Session Work', 'Project Setup Task'), 'only stopwords in common is not the same topic');
   assert.ok(sameTopic('Tagoto Exploration', 'Tagoto Experimentation Session'), 'a shared significant word is');
@@ -319,8 +304,6 @@ check('joinRecent pulls older context in only up to the minimum', () => {
   assert.strictEqual(joinRecent([]), '');
 });
 
-// ------------------------------------------------- watcher supervision --
-//
 // Only the branches that decide NOT to spawn. The spawning one belongs to
 // test-lifecycle.js -- a unit test that launches a daemon leaves one behind
 // when it fails.
@@ -333,15 +316,13 @@ function resetSupervisorState() {
   for (const f of [supervisor.LOCK_FILE, supervisor.STAMP_FILE, supervisor.DISABLE_FILE]) {
     try {
       fs.unlinkSync(f);
-    } catch {
-      /* not there */
-    }
+    } catch {}
   }
 }
 
 check('supervisor reports a live lock holder as running', () => {
   resetSupervisorState();
-  fs.writeFileSync(supervisor.LOCK_FILE, String(process.pid)); // definitionally alive
+  fs.writeFileSync(supervisor.LOCK_FILE, String(process.pid));
   assert.strictEqual(supervisor.ensureWatcher(), 'running');
 });
 
@@ -377,7 +358,7 @@ check('repeated failures stop the retry loop instead of spawning forever', () =>
 check('a dead pid in the lock file does not count as a running watcher', () => {
   resetSupervisorState();
   fs.writeFileSync(supervisor.LOCK_FILE, '999999');
-  // Sentinel too, so no spawn can happen and the assertion is about liveness.
+  // Sentinel too, so no spawn can happen out of a unit test.
   fs.writeFileSync(supervisor.DISABLE_FILE, 'paused');
   assert.strictEqual(supervisor.ensureWatcher(), 'disabled');
   assert.strictEqual(supervisor.watcherPid(), null);
@@ -389,13 +370,9 @@ check('a corrupt lock file is treated as no watcher, not as a crash', () => {
   assert.strictEqual(supervisor.watcherPid(), null);
 });
 
-// --------------------------------------------------- statusline messages --
-
 const { watcherMessage } = require('./statusline');
 
 check('every supervisor state gets a distinguishable status line message', () => {
-  // Collapsing any two defeats the point of having the states. ('running'
-  // only reaches here via the default arm.)
   const states = ['running', 'starting', 'cooldown', 'failed', 'disabled'];
   const seen = new Set(states.map((s) => watcherMessage(s)));
   assert.strictEqual(seen.size, states.length, `messages collapsed: ${[...seen].join(' | ')}`);
@@ -404,8 +381,6 @@ check('every supervisor state gets a distinguishable status line message', () =>
 check('the failed state names the command that explains why', () => {
   assert.match(watcherMessage('failed'), /watcher\.js/);
 });
-
-// ------------------------------------------------------------- teardown --
 
 fs.rmSync(tmp, { recursive: true, force: true });
 fs.rmSync(stateTmp, { recursive: true, force: true });

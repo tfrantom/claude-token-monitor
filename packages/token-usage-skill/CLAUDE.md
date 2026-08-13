@@ -63,6 +63,10 @@ a BOM via `[System.IO.File]::WriteAllText(..., New-Object System.Text.UTF8Encodi
 `JSON.parse` throw outright. `lookup.js` also strips a leading BOM defensively;
 that is belt-and-braces, not permission to write one.
 
+Reading is the mirror image: `Get-Content -Raw -Encoding UTF8` is mandatory, or
+5.1 decodes the BOM-less `~/.claude/CLAUDE.md` as the system codepage, turns
+every em-dash into mojibake, and writes it straight back out.
+
 The `CLAUDE.md` block is delimited by `<!-- token-usage-skill:start -->` /
 `:end` markers and rewritten in place, so re-running the installer updates it
 rather than appending a duplicate. Keep both markers intact.

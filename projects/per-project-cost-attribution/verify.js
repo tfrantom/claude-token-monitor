@@ -1,18 +1,6 @@
 'use strict';
 
-// Verification harness, run against the real transcripts on this machine:
-//
-//   node verify.js            all transcripts
-//   node verify.js --since 7d recent ones only
-//
-// Proves three things, worst regression first:
-//  1. RECONCILIATION -- this project's independent parse agrees with
-//     token-monitor-core's classifySession(), key by key. packages/ is
-//     read-only from here, so asserting agreement on demand is the only
-//     defence against the two parsers drifting apart.
-//  2. CONSERVATION -- per-cwd slices sum back to the session total.
-//     Attribution is a partition of the cost, never a re-estimate.
-//  3. CWD STABILITY -- re-measures the per-turn cwd conflict count.
+// node verify.js [--since 7d] -- see CLAUDE.md "Verification"
 
 const path = require('path');
 const { parseTranscript, attributeSession, TOTALS_KEYS } = require('./lib/attribute');
@@ -20,7 +8,6 @@ const { findTranscripts, loadStatus, sessionMeta } = require('./lib/sources');
 const { resolveProject } = require('./lib/project-map');
 const { toSliceRows, sumTotals } = require('./lib/report');
 
-// Read-only: the thing being reconciled against.
 const { classifySession } = require('../../packages/token-monitor-core/lib/transcript');
 
 const EPS = 1e-9;
@@ -57,9 +44,7 @@ function main() {
   const status = loadStatus();
   const files = findTranscripts({ since });
   if (files.length === 0) {
-    // Exit 3, not 1: run-checks.js reads that as SKIP. Nothing to reconcile
-    // is not the same as a reconciliation that disagreed, and on a fresh
-    // clone or a CI runner it is the normal state.
+    // Exit 3 is SKIP -- see ../CLAUDE.md "Adding a check"
     console.log('no transcripts found -- nothing to verify');
     process.exit(3);
   }
@@ -86,7 +71,6 @@ function main() {
       continue;
     }
 
-    // 1. reconciliation against the shared classifier
     const ref = classifySession(f.path);
     if (ref) {
       const bad = TOTALS_KEYS.filter((k) => !closeEnough(mainParse.totals[k], ref.totals[k]));
@@ -105,7 +89,6 @@ function main() {
 
     const session = attributeSession(parses, { claude_project: f.claudeProject, ...sessionMeta(status, f.sessionId) });
 
-    // 2. conservation: slices partition the total exactly
     const rows = toSliceRows(session);
     const summed = sumTotals(rows);
     const bad = TOTALS_KEYS.filter((k) => !closeEnough(summed[k], session.totals[k]));
@@ -117,7 +100,6 @@ function main() {
     const turnSum = rows.reduce((n, r) => n + r.turns, 0);
     check(turnSum === session.turns, `${label} turn counts partition`, `slices=${turnSum} session=${session.turns}`);
 
-    // 3. cwd stability
     for (const p of parses) {
       stability.files += 1;
       stability.turns += p.turns;
@@ -134,7 +116,6 @@ function main() {
     subagentCost += session.totals.cost_usd - session.main_totals.cost_usd;
   }
 
-  // 4. resolver spot-checks -- the cwd -> project decisions, asserted
   const suite = 'C:\\projects\\claude-token-monitor';
   const cases = [
     [`${suite}\\packages\\token-monitor-core`, 'claude-token-monitor', 'suite package rolls up to the suite'],
@@ -149,7 +130,7 @@ function main() {
     console.log(`  ${r.project === expect ? 'ok  ' : '    '} ${cwd}  ->  ${r.project}  [${r.resolver}]  subpath=${r.subpath}`);
   }
 
-  console.log('\ncwd stability (the open question from the brief)');
+  console.log('\ncwd stability');
   console.log(`  transcript files parsed        ${stability.files}`);
   console.log(`  API turns                      ${stability.turns}`);
   console.log(`  turns whose lines disagreed    ${stability.turnsWithConflict}   <- 0 means cwd is turn-stable`);
@@ -162,7 +143,7 @@ function main() {
 
   console.log('\nsubagent contribution');
   console.log(`  main transcripts   $${mainCost.toFixed(2)}`);
-  console.log(`  subagents          $${subagentCost.toFixed(2)}  (invisible to status.json)`);
+  console.log(`  subagents          $${subagentCost.toFixed(2)}`);
 
   console.log(`\n${checks - failures}/${checks} checks passed`);
   process.exit(failures === 0 ? 0 : 1);

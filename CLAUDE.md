@@ -174,6 +174,19 @@ library only — `run-checks.js` is a hand-rolled runner for exactly this reason
 If you are about to add a dependency, that is a suite-level architectural
 change: raise it rather than doing it.
 
+## Live wiring lives outside this repo
+
+Five things point *into* the suite from elsewhere. None are in the repo, and
+all of them break if the suite moves — re-run `install.ps1` after any move.
+
+| Where | Points at |
+|---|---|
+| `~/.claude/settings.json` → `statusLine.command` | `packages/token-monitor-core/statusline.js` |
+| `~/AppData/Local/nvim/lua/plugins/claude-token-monitor.lua` → `dir=` | `packages/token-monitor.nvim/` |
+| `~/.claude/skills/token-usage/` | installed copy of `packages/token-usage-skill/` |
+| `~/.claude/skills/local-inference/` | installed copy of `projects/local-inference-skill/` |
+| `~/.claude/CLAUDE.md` | marked blocks pointing future sessions at both skills |
+
 ## Every component owns its own installer
 
 `install.ps1` at the root is a pure discovery driver — it globs
@@ -236,27 +249,33 @@ another repo is using.
 
 ## Conventions
 
-**Write as few comments as possible.** The best comment is the one that doesn't
-need to exist; usually the fix is a better name or a smaller function. A
-comment earns its place only if a competent reader would be *wrong* without it
-— a non-obvious why, a trap with teeth, a contract the signature can't express.
-Keep those to a line or two.
+**Start from zero comments and justify each one back in.** The default is that
+a comment should not exist. The only test: *would a competent contributor make
+a wrong change without this line?* Not "is this interesting" — would they get
+it **wrong**. Almost always no, and the real fix is a better name or a smaller
+function.
 
-Delete on sight: restatements of the code, history ("this used to be X"), the
-bug that was live the day it was written, measurements written up inline, and
-commented-out code. Scaffolding comments are fine while building and should be
-stripped before the code is shared.
+Delete without looking for a reason to keep: restatements of the code, any
+history ("this used to be", "we tried", "it turned out"), the bug that was live
+the day it was written, measurements, rationale for a decision that is now just
+how the code is, section-divider banners, explanations on empty `catch` blocks,
+and commented-out code.
 
-**But never delete the knowledge — move it.** A measured finding or a
-documented dead end is expensive to re-derive, and losing one is worse than an
-over-commented file. It belongs in a `CLAUDE.md` — this file for suite-wide
-rules, the package's own for local ones. Where the code still looks wrong
-without context, leave a pointer rather than the story:
-`// see CLAUDE.md "Ports are hand-claimed"`. If you disprove a finding, replace
-it with what you measured.
+Keep only a line that stops someone breaking it — an ordering requirement, a
+platform quirk, a silent-data-loss trap — or a pointer to where the why lives:
+`// see CLAUDE.md "Ports are hand-claimed"`. One or two lines. If it needs a
+paragraph, it belongs here instead.
 
-READMEs describe what exists and how to use it, not the journey to it. Status
-commentary, escalations, and "it turned out that…" belong here instead.
+**Never delete the knowledge — move it.** A measured finding is expensive to
+re-derive, and losing one is worse than an over-commented file. This file takes
+suite-wide rules, each package's own takes local ones, and both can be as long
+as they need to be. If you disprove a finding, replace it with what you
+measured.
+
+**A README answers three questions and stops:** what is this, what does it
+need, how do I install and run it. Architecture, contracts, measurements,
+limitations and background all belong in a `CLAUDE.md`. If a README sentence
+explains *why*, it is in the wrong file.
 
 Prefer measuring to guessing. Transcript parsing was nearly "optimized" with an
 mtime cache before anyone timed it: it is 8ms per tick against the active set,

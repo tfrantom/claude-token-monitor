@@ -1,31 +1,13 @@
 'use strict';
 
-// The port registry for every local llama-server instance this suite runs.
-// Claims are declarative and validated on require; consumers look their port
-// up by name rather than hardcoding a number. See CLAUDE.md "Ports are
-// hand-claimed, and killing is by PID".
+// The port registry. Add a claim here, read it back with portFor(name) -- see
+// CLAUDE.md "Ports are hand-claimed, and killing is by PID".
 
 const net = require('net');
 const cfg = require('./config');
 
 const HOST = cfg.LLAMA_HOST;
 
-// ---------------------------------------------------------------------------
-// The claims. Add an entry HERE, then read the port back with portFor(name).
-//
-//   port       the claimed TCP port on HOST
-//   owner      repo-relative path of the code that spawns it
-//   alias      the -a value the owner should pass, so the instance identifies
-//              itself in /props and /v1/models. Defaults to the claim name in
-//              ensureRunningFor().
-//   mode       'chat' | 'embedding' -- --embedding is an exclusive server
-//              mode, which is the whole reason there is more than one port.
-//   model      human label only. The authoritative model path stays in the
-//              owner's own config; identity checks compare against the path
-//              the *caller* is about to spawn with (see assertAvailable).
-//   shared     true = other code is expected to reuse this instance as-is
-//              and must never reconfigure it.
-// ---------------------------------------------------------------------------
 const CLAIMS = {
   'chat-shared': {
     port: 8090,
@@ -42,8 +24,7 @@ const CLAIMS = {
 
 };
 
-// Ports in use that nobody in this suite owns. Never claimed, never suggested.
-// Data rather than a comment so suggestPort() can honour them.
+// Never claimed, never suggested.
 const RESERVED = {
   8099:
     'Occupied by a process outside this suite. Observed serving nomic-embed-text ' +
@@ -51,10 +32,6 @@ const RESERVED = {
     'another session. Do not claim; do not kill without finding its owner.',
 };
 
-// ---------------------------------------------------------------------------
-// Static validation -- runs on require, on purpose: the only honest time to
-// report a duplicate claim is the moment the second one is loaded.
-// ---------------------------------------------------------------------------
 function validate(claims = CLAIMS, reserved = RESERVED) {
   const seen = new Map();
   for (const [name, c] of Object.entries(claims)) {
@@ -77,8 +54,6 @@ function validate(claims = CLAIMS, reserved = RESERVED) {
     seen.set(c.port, name);
   }
 
-  // config.js's LLAMA_PORT is what ensureRunning() actually defaults to, so an
-  // env var that moves it makes the 'chat-shared' claim stale.
   if (claims['chat-shared'] && claims['chat-shared'].port !== cfg.LLAMA_PORT) {
     throw new Error(
       `port registry: claim 'chat-shared' says ${claims['chat-shared'].port} but ` +
@@ -91,15 +66,10 @@ function validate(claims = CLAIMS, reserved = RESERVED) {
 
 validate();
 
-// A consumer that wants a different port edits this file; it does not mutate
-// the table at runtime.
 Object.values(CLAIMS).forEach(Object.freeze);
 Object.freeze(CLAIMS);
 Object.freeze(RESERVED);
 
-// ---------------------------------------------------------------------------
-// Lookup
-// ---------------------------------------------------------------------------
 function names() {
   return Object.keys(CLAIMS);
 }
@@ -133,14 +103,8 @@ function whoClaims(port) {
   return name ? get(name) : null;
 }
 
-// ---------------------------------------------------------------------------
-// Live probing
-// ---------------------------------------------------------------------------
-
-// A raw TCP connect, not an HTTP request: something can be bound to a port
-// without answering /health (a non-llama service, or a llama-server still
-// loading a model), and that is exactly the case where "is it free?" over HTTP
-// lies and you spawn into a bind failure.
+// A raw TCP connect, not /health: something can hold a port without answering
+// HTTP, and that is exactly when an HTTP "is it free?" lies.
 function isListening(port, { host = HOST, timeoutMs = 400 } = {}) {
   return new Promise((resolve) => {
     const sock = new net.Socket();
@@ -159,8 +123,6 @@ function isListening(port, { host = HOST, timeoutMs = 400 } = {}) {
   });
 }
 
-// Ask a listener to identify itself. Returns null for anything that is not a
-// llama-server.
 async function identify(port, { host = HOST, timeoutMs = 1500 } = {}) {
   try {
     const res = await fetch(`http://${host}:${port}/props`, {
@@ -180,25 +142,16 @@ async function identify(port, { host = HOST, timeoutMs = 1500 } = {}) {
   }
 }
 
-// llama-server echoes back whatever path string it was handed, which may use
-// forward slashes where config.js hands out backslashes. Compare the files,
-// not the spelling.
+// llama-server echoes back whatever path string it was handed. Compare the
+// files, not the spelling.
 function samePath(a, b) {
   if (!a || !b) return false;
   const norm = (p) => p.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
   return norm(a) === norm(b);
 }
 
-// status:
-//   'free'      nothing is listening -- spawning is safe
-//   'ours'      a llama-server is up and serving the model we expected
-//   'llama'     a llama-server is up, but no expectation was given to check it
-//               against (reuse is probably fine -- verify the alias/model)
-//   'mismatch'  a llama-server is up serving a DIFFERENT model. The dangerous
-//               one: ensureRunning() would reuse it and silently answer from
-//               the wrong model.
-//   'foreign'   something is listening that is not a llama-server. Spawning
-//               here will fail to bind.
+// status -> 'free' | 'ours' | 'llama' | 'mismatch' | 'foreign'
+// See CLAUDE.md "Ports are hand-claimed" for what each one means for a spawner.
 async function inspect(name, { expectModelPath = null, host = HOST } = {}) {
   const claim = typeof name === 'string' ? get(name) : name;
   const port = claim.port;
@@ -228,8 +181,6 @@ async function scan(opts = {}) {
         port,
         owner: 'outside this suite',
         reserved: RESERVED[p],
-        // 'reserved' either way: not listening today does not make it
-        // claimable, only that the squatter is between runs.
         status: 'reserved',
         listening,
         occupant: listening ? await identify(port) : null,
@@ -239,10 +190,8 @@ async function scan(opts = {}) {
   return [...claimed, ...reserved];
 }
 
-// The pre-flight a spawner should run: throws naming the occupant instead of
-// letting llama-server fail to bind and time out. Returns
-// { port, host, reuse } -- reuse true means a healthy instance of the right
-// model is already there and you should not spawn.
+// -> { port, host, reuse }; reuse true means a healthy instance of the right
+// model is already there and you must not spawn.
 async function assertAvailable(name, { expectModelPath = null, host = HOST } = {}) {
   const state = await inspect(name, { expectModelPath, host });
   const where = `port ${state.port} (claimed by '${state.name}', ${state.owner})`;
@@ -269,8 +218,6 @@ async function assertAvailable(name, { expectModelPath = null, host = HOST } = {
   return { port: state.port, host, reuse: state.status !== 'free', state };
 }
 
-// Skips claimed ports, reserved ports, and anything actually listening --
-// other tools on this machine routinely hold neighbouring ports.
 async function suggestPort({ from = 8090, to = 8130, host = HOST } = {}) {
   for (let port = from; port <= to; port++) {
     if (whoClaims(port) || RESERVED[port]) continue;
@@ -299,11 +246,6 @@ module.exports = {
   validate,
 };
 
-// ---------------------------------------------------------------------------
-// CLI:  node ports.js               -- the table, with live status
-//       node ports.js <claim-name>  -- just the number (shell-friendly)
-//       node ports.js --suggest     -- first port free by registry and by TCP
-// ---------------------------------------------------------------------------
 if (require.main === module) {
   (async () => {
     const arg = process.argv[2];

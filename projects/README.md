@@ -1,7 +1,8 @@
 # Extension projects
 
 Extensions to the [claude-token-monitor suite](../README.md), one folder per
-idea. Each has its own `README.md` covering how to run and configure it.
+idea. Each has its own `README.md` for how to run and configure it, and its own
+`CLAUDE.md` for how it works.
 
 | Project | What it does |
 |---|---|
@@ -12,31 +13,25 @@ idea. Each has its own `README.md` covering how to run and configure it.
 | [`per-project-cost-attribution`](per-project-cost-attribution/) | Attributes cost by real repo/directory rather than Claude Code's coarse per-terminal grouping |
 
 `local-inference-skill` and `ask-question-prefilter` are installed or wired by
-`install.ps1`; `cost-anomaly-alerts` and `usage-history-rollups` are daemons
-you start yourself. See each project's README.
+`install.ps1`; `cost-anomaly-alerts` and `usage-history-rollups` are daemons you
+start yourself.
 
 ## Shared infrastructure
 
-- **`llama-local-server` supports multiple instances.**
-  `ensureRunning({port, modelPath, extraArgs, contextSize, detached, ...})` —
-  every option defaults to the shared chat instance on 8090, so
-  `ensureRunning()` with no args is unchanged. Use it rather than copying the
-  spawn logic.
+- **`status.json`** — read it by path, never write it. The rules that matter are
+  in [`CLAUDE.md`](CLAUDE.md).
+- **`llama-local-server`** — use
+  `ensureRunning({ port, modelPath, extraArgs, contextSize, detached, ... })`
+  rather than copying the spawn logic. Every option defaults to the shared chat
+  instance on 8090.
 - **Ports** are claimed declaratively in
   [`packages/llama-local-server/ports.js`](../packages/llama-local-server/ports.js).
   Add a claim there and read it back with `portFor(name)`; do not hardcode a
-  number in your own config. Two claims on one port throw on require.
+  number in your own config.
 
   | Port | Owner | Model / mode |
   |---|---|---|
   | 8090 | `packages/llama-local-server` (shared) | `llama3.2` 3B, chat |
   | 8099 | **reserved** — a process outside this suite was found squatting here | — |
 
-  A dedicated instance is spawned `detached: true` and stays resident until an
-  explicit kill, so expect more than one `llama-server.exe` on a busy machine.
-  Kill by PID/port, never by image name.
-
-- **Consuming `status.json`** — read it by path, never write it, and see
-  [`CLAUDE.md`](CLAUDE.md) for the rules that matter (the two-poll `ended`
-  confirmation, subagent spend in session totals, the `agents` array, and the
-  one-watcher-at-a-time invariant).
+  Kill `llama-server.exe` by PID or port, never by image name.

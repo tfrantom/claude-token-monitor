@@ -1,19 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-// extract.js -- pull one specific, literal value out of a block of text. Not
-// a paraphrase or a judgment call. See SKILL.md for scope.
-//
-// Input: one JSON object, via `--in <file.json>` (preferred) or on stdin:
+// node extract.js --in <file.json>   -- see SKILL.md for scope, CLAUDE.md for the contract
 //   { "text": "...", "field": "the invoice total", "instructions": "..." }
-// "field" (required) describes what to pull out; "instructions" (optional) is
-// extra guidance on format or units.
-//
-// Output: the extracted value, or the literal "(not found)". Both are
-// legitimate exit-0 results.
-//
-// Exit 1 means delegation failed (bad input, server unavailable, unusable
-// response) -- do the extraction yourself rather than retrying.
 
 const { ensureRunning, chatJSON, truncate, readInputJSON, failAndExit } = require('./lib/local-client');
 

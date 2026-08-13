@@ -1,15 +1,7 @@
 'use strict';
 
-// Shared plumbing for the local-inference skill's scripts.
-//
-// Self-contained on purpose: install.ps1 copies this file wholesale into
-// ~/.claude/skills/local-inference/scripts/lib/, and the installed copy must
-// keep working if claude-token-monitor moves or breaks. So the connection and
-// spawn logic below is a deliberate duplicate of
-// packages/llama-local-server/{config,server}.js rather than a `require`
-// across the repo boundary -- the same rule lookup.js follows.
-//
-// Settings resolve env vars -> config.json at the skill root -> discovery.
+// Runs outside the suite once installed: require() nothing from it.
+// see CLAUDE.md "local-client.js duplicates rather than requires"
 
 const os = require('os');
 const fs = require('fs');
@@ -17,11 +9,8 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 function loadConfigFile() {
-  // <skill root>/config.json -- this file lives at <skill root>/scripts/lib/.
   const configPath = path.join(__dirname, '..', '..', 'config.json');
   try {
-    // Strip a leading BOM: PowerShell 5.1 emits one unless the writer goes
-    // out of its way not to, and JSON.parse throws on it.
     return JSON.parse(fs.readFileSync(configPath, 'utf8').replace(/^\uFEFF/, ''));
   } catch {
     return {};
@@ -30,8 +19,6 @@ function loadConfigFile() {
 
 const fileCfg = loadConfigFile();
 
-// Compact duplicates of llama-local-server/config.js's resolvers, kept in step
-// with that file by intent rather than by import. See the header.
 const EXE_NAME = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
 
 function findServerExe() {
@@ -54,15 +41,11 @@ function findServerExe() {
   for (const c of candidates) {
     try {
       if (fs.statSync(c).isFile()) return c;
-    } catch {
-      /* next */
-    }
+    } catch { }
   }
   return EXE_NAME; // let the spawn's 'error' event name it
 }
 
-// Ollama keeps a manifest per model reference pointing at the content-
-// addressed blob. Read it rather than pasting in a digest.
 function resolveOllamaModel(ref) {
   const dir = process.env.OLLAMA_MODELS || path.join(os.homedir(), '.ollama', 'models');
   const [name, tag = 'latest'] = String(ref).split(':');
@@ -86,10 +69,7 @@ const LLAMA_SERVER_EXE = process.env.LLAMA_SERVER_EXE || fileCfg.llamaServerExe 
 const LLAMA_MODEL_PATH =
   process.env.LLAMA_MODEL_PATH || fileCfg.llamaModelPath || resolveOllamaModel(LLAMA_MODEL);
 
-// Where llama-local-server/managed.js records who owns the shared instance.
-// This *path* must match exactly: it is the only thing that lets the watcher
-// find a server this skill started and stop it when the last session closes.
-// Get it wrong and a one-shot skill call leaks a resident model.
+// Must match managed.js's path exactly -- see CLAUDE.md "The ownership record path"
 const RUNTIME_DIR = process.env.LLAMA_RUNTIME_DIR || path.join(os.homedir(), '.claude', 'llama-local-server');
 const RECORD_FILE = path.join(RUNTIME_DIR, 'chat-shared.json');
 
@@ -104,11 +84,7 @@ async function isUp() {
   }
 }
 
-// Records this spawn in managed.js's ownership file. These scripts never kill
-// the server themselves -- they are one-shot and other clients share the
-// instance -- so writing the record is what hands its lifetime to the watcher.
-// Skip it and a skill call that happened to be first to the port leaves a
-// resident model behind for good.
+// Skipping this leaks a resident model -- see CLAUDE.md "The ownership record path"
 function recordSpawn(pid) {
   if (!pid) return;
   try {
@@ -130,15 +106,9 @@ function recordSpawn(pid) {
       )
     );
     fs.renameSync(tmp, RECORD_FILE);
-  } catch {
-    // Best effort: failing the user's subtask over a bookkeeping write would
-    // be worse than the leak it risks.
-  }
+  } catch { }
 }
 
-// Mirrors llama-local-server/server.js's ensureRunning(): reuse an
-// already-running instance, spawn and wait only if nothing answered. Throws if
-// it can't get healthy, and callers turn that into "do the subtask yourself".
 async function ensureRunning() {
   if (await isUp()) return;
 
@@ -156,10 +126,7 @@ async function ensureRunning() {
   );
   child.unref?.();
 
-  // An unhandled 'error' event on a ChildProcess is a hard throw in Node, and
-  // a wrong LLAMA_SERVER_EXE is the likeliest failure on a machine that isn't
-  // this one. Capture it and bail rather than eating the full 30s timeout
-  // waiting on a process that never started.
+  // Capturing this is what makes a bad exe path bail in ms, not 30s.
   let spawnError = null;
   child.on('error', (err) => {
     spawnError = err;
@@ -169,8 +136,7 @@ async function ensureRunning() {
   while (Date.now() < deadline) {
     if (spawnError) throw new Error(`could not start llama-server (${spawnError.message})`);
     if (await isUp()) {
-      // Only once it is actually serving -- recording a pid that never came
-      // up would point the watcher's shutdown at a dead process.
+      // Only once it is serving: a recorded pid that never came up misdirects the watcher's kill.
       recordSpawn(child.pid);
       return;
     }
@@ -179,8 +145,6 @@ async function ensureRunning() {
   throw new Error('llama-server did not become healthy within 30s');
 }
 
-// Truncates from the middle so both ends of a long input survive. Matches
-// token-monitor-core/lib/semantic-classifier.js's truncate().
 function truncate(text, max) {
   if (text.length <= max) return text;
   const head = Math.ceil(max * 0.7);
@@ -188,9 +152,6 @@ function truncate(text, max) {
   return `${text.slice(0, head)}\n...[truncated]...\n${text.slice(-tail)}`;
 }
 
-// Plain-text completion: one fetch, no retry loop, null on any failure. Same
-// shape as token-monitor-core's llm-client.js -- a momentarily-down or
-// restarting llama-server is expected here, not exceptional.
 async function chatText(systemPrompt, userContent, { maxTokens = 200, temperature = 0.2, timeoutMs = 20000 } = {}) {
   try {
     const res = await fetch(`${BASE_URL}/v1/chat/completions`, {
@@ -216,9 +177,6 @@ async function chatText(systemPrompt, userContent, { maxTokens = 200, temperatur
   }
 }
 
-// Structured completion via json_schema + strict:true. Decoding is
-// grammar-constrained, so an `enum` in the schema is a hard guarantee about
-// the output rather than a request the 3B model may ignore.
 async function chatJSON(systemPrompt, userContent, schema, schemaName, { maxTokens = 300, temperature = 0.1, timeoutMs = 20000 } = {}) {
   try {
     const res = await fetch(`${BASE_URL}/v1/chat/completions`, {
@@ -246,11 +204,7 @@ async function chatJSON(systemPrompt, userContent, schema, schemaName, { maxToke
   }
 }
 
-// Input is one JSON object, never argv text: quotes, newlines, backticks and
-// `$` survive a file where they would not survive being spliced into a
-// command line. `--in <path>` is what SKILL.md tells Claude to use; stdin also
-// works, but only from a POSIX shell (PowerShell re-encodes a pipe to a
-// native exe through the console codepage, mangling non-ASCII).
+// --in, never argv text, and stdin only from a POSIX shell -- see ../CLAUDE.md
 function readInputJSON(argv) {
   const i = argv.indexOf('--in');
   const file = i !== -1 ? argv[i + 1] : null;
@@ -280,8 +234,6 @@ function readInputJSON(argv) {
   }
 }
 
-// Uniform failure exit: reason on stderr, exit 1, which SKILL.md defines as
-// "delegation itself failed -- do the subtask yourself, don't retry."
 function failAndExit(message) {
   console.error(`local-inference: ${message}`);
   process.exitCode = 1;

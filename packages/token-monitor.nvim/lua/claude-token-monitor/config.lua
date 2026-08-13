@@ -1,21 +1,18 @@
 local M = {}
 
--- Derived from this file's own path, not hardcoded -- see CLAUDE.md
--- "It locates itself".
+-- see CLAUDE.md "It locates itself"
 local function default_status_file()
-  local source = debug.getinfo(1, "S").source:sub(2) -- strip leading "@"
+  local source = debug.getinfo(1, "S").source:sub(2)
   local plugin_dir = source:gsub("[/\\]lua[/\\]claude%-token%-monitor[/\\]config%.lua$", "")
-  local packages_dir = plugin_dir:gsub("[/\\][^/\\]+$", "") -- strip trailing /token-monitor.nvim
+  local packages_dir = plugin_dir:gsub("[/\\][^/\\]+$", "")
   return packages_dir .. "/token-monitor-core/state/status.json"
 end
 
 M.defaults = {
   status_file = default_status_file(),
   poll_interval_ms = 5000,
-  -- "statusline" (bottom, default) or "winbar" (top, per-window).
   position = "statusline",
-  -- Display-side only, independent of the watcher's active window -- see
-  -- CLAUDE.md "Staleness is the plugin's own problem".
+  -- see CLAUDE.md "Staleness is the plugin's own problem"
   stale_after_ms = 10 * 60 * 1000,
   max_other_sessions = 3,
   icons = {

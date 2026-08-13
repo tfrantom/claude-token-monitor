@@ -1,9 +1,6 @@
 'use strict';
 
-// Offline checks: tier math, the dedup gate, -File quote safety, and a
-// missing or mid-write status.json. Fires no notifications, needs no watcher.
-//
-//   node test.js
+// node test.js -- offline; fires no notifications, needs no watcher.
 
 const fs = require('fs');
 const os = require('os');
@@ -19,25 +16,21 @@ function check(label, actual, expected) {
 
 const TIERS = [10, 25, 50, 100];
 
-// ── tier math ────────────────────────────────────────────────────────────
 check('below lowest tier -> null', crossedTier(9.99, TIERS), null);
 check('exactly on a tier counts as crossed', crossedTier(10, TIERS), 10);
 check('between tiers -> lower one', crossedTier(24.99, TIERS), 10);
 check('highest tier reached', crossedTier(101, TIERS), 100);
 check('zero cost -> null', crossedTier(0, TIERS), null);
 
-// ── the dedup gate ───────────────────────────────────────────────────────
 check('first crossing fires', shouldNotify(10, undefined), true);
 check('same tier again stays silent', shouldNotify(10, { tier: 10 }), false);
 check('higher tier fires again', shouldNotify(25, { tier: 10 }), true);
 check('lower tier than already notified stays silent', shouldNotify(10, { tier: 50 }), false);
 
-// Cost climbs, then sits still for many ticks: one alert per tier genuinely
-// crossed, not one per tick.
 const costSequence = [
-  0, 5, 9.99,                 // below any tier
-  10.01, 11, 14, 18, 22, 24,  // crossed $10, then drifts under $25
-  25.5, 26, 30, 40, 49,       // crossed $25, then drifts under $50
+  0, 5, 9.99,
+  10.01, 11, 14, 18, 22, 24,
+  25.5, 26, 30, 40, 49,
 ];
 let entry;
 const fired = [];
@@ -50,8 +43,6 @@ for (const cost of costSequence) {
 }
 check('15 ticks spanning two crossings -> exactly 2 alerts', fired, [10, 25]);
 
-// A tick that leaps several tiers produces one alert naming the highest tier
-// reached, not one per skipped tier.
 let jumpEntry;
 const jumpFired = [];
 for (const cost of [8, 60]) {
@@ -63,7 +54,6 @@ for (const cost of [8, 60]) {
 }
 check('$8 -> $60 in one tick -> single $50 alert', jumpFired, [50]);
 
-// ── message safety (regression: -File truncated on embedded quotes) ──────
 check('spaces in a name survive', safeName('Project Setup'), 'Project Setup');
 check('embedded double quotes stripped', safeName('the "big" refactor'), 'the big refactor');
 check('backticks stripped', safeName('fix `foo`'), 'fix foo');
@@ -71,7 +61,6 @@ check('missing name falls back', safeName(null), '(unnamed session)');
 check('whitespace-only name falls back', safeName('   '), '(unnamed session)');
 check('a name that is only quotes falls back', safeName('""'), '(unnamed session)');
 
-// ── resilience of the status.json read ───────────────────────────────────
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cost-alerts-test-'));
 check('missing file -> fallback', loadJson(path.join(tmp, 'nope.json'), null), null);
 

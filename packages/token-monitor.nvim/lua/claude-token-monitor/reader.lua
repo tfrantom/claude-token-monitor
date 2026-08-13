@@ -1,7 +1,6 @@
 local M = {}
 
---- Returns nil on any failure (missing, empty, mid-write) rather than
---- erroring. nil means "no data this tick", not a bug.
+-- nil on any failure (missing, empty, mid-write) -- "no data this tick", not an error.
 function M.read_status(path)
   local f = io.open(path, "r")
   if not f then
@@ -19,14 +18,12 @@ function M.read_status(path)
   return decoded
 end
 
---- Mirrors Claude Code's own project-directory naming: ":" and path
---- separators become "-" (e.g. "C:\projects" -> "C--projects").
+-- Must mirror Claude Code's own project-directory naming: "C:\projects" -> "C--projects".
 function M.sanitize_cwd(path)
   return (path:gsub("[:\\/]", "-"))
 end
 
---- Set only when Neovim was launched from inside a Claude Code session, so
---- nil is the common case and callers must have a fallback.
+-- nil unless Neovim was launched from inside a Claude Code session, so callers need a fallback.
 function M.detect_session_id()
   local id = vim.env.CLAUDE_CODE_SESSION_ID
   if id and id ~= "" then
@@ -40,10 +37,7 @@ local function is_stale(session, now_ms, stale_after_ms)
   return (now_ms - mtime) > stale_after_ms
 end
 
---- Picks the active session, orders the rest most-recent-first. Active is:
----   1. exact match on CLAUDE_CODE_SESSION_ID, if set
----   2. most-recently-active session whose project matches Neovim's cwd
----   3. nil -- nothing highlighted, all listed the same way
+-- see CLAUDE.md "Picking the active session"
 function M.select_sessions(status, opts)
   if not status or not status.sessions then
     return { active = nil, others = {} }
@@ -52,8 +46,7 @@ function M.select_sessions(status, opts)
   local now_ms = os.time() * 1000
   local sessions = {}
   for _, s in pairs(status.sessions) do
-    -- Ended sessions stay in status.json on purpose; each consumer drops
-    -- them itself. See CLAUDE.md "Staleness is the plugin's own problem".
+    -- see CLAUDE.md "Staleness is the plugin's own problem"
     if not s.ended and not is_stale(s, now_ms, opts.stale_after_ms) then
       table.insert(sessions, s)
     end

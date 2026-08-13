@@ -1,16 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-// summarize.js -- a short, plain-text summary of a block of text. Not for
-// anything where nuance, correctness, or completeness matters; see SKILL.md.
-//
-// Input: one JSON object, via `--in <file.json>` (preferred) or on stdin:
-//   { "text": "...", "max_words": 40 }   // max_words optional, default 40
-//
-// Output: the summary, plain text, no markdown, no preamble.
-//
-// Exit 1 means delegation failed (bad input, server unavailable, unusable
-// response) -- write the summary yourself rather than retrying.
+// node summarize.js --in <file.json>   -- see SKILL.md for scope, CLAUDE.md for the contract
+//   { "text": "...", "max_words": 40 }
 
 const { ensureRunning, chatText, truncate, readInputJSON, failAndExit } = require('./lib/local-client');
 
@@ -52,7 +44,6 @@ async function main() {
   }
 
   const userContent = truncate(parsed.text, MAX_TEXT_CHARS);
-  // Generous headroom for the model's own wordiness.
   const maxTokens = Math.min(400, Math.ceil(parsed.maxWords * 2.2));
   const summary = await chatText(systemPrompt(parsed.maxWords), userContent, { maxTokens, temperature: 0.3 });
   if (!summary) {

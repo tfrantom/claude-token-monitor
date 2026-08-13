@@ -56,6 +56,24 @@ remote. Consequences:
   Neovim reads it as Lua source and a BOM lands as a stray character before
   `return`. See the suite CLAUDE.md "PowerShell 5.1 encoding".
 
+## Picking the active session
+
+`reader.select_sessions()` tries, in order:
+
+1. An exact match on `CLAUDE_CODE_SESSION_ID`. Neovim only inherits that when
+   it was launched from inside a Claude Code session, so it is nil for a normal
+   editing session and the fallback is the usual path — do not treat it as the
+   primary route.
+2. The most-recently-active session whose `project` matches Neovim's cwd,
+   sanitized the way Claude Code names its own project directories
+   (`C:\projects` → `C--projects`). `sanitize_cwd()` has to stay in step with
+   that convention or nothing ever matches.
+3. Nothing active — every session renders the same way. This is a normal
+   state, not an error to report.
+
+The remaining sessions are ordered most-recent-first and trimmed to
+`max_other_sessions`.
+
 ## Only the active session gets agent detail
 
 The active session renders a per-agent `<tokens>-<cost>` list; every other
@@ -67,6 +85,21 @@ A session's `totals.cost_usd` already **includes** its subagents' spend, so the
 per-agent figures are a breakdown, not something to add on. Subagent spend was
 missing before 2026-08-06 and is worth roughly 18%, so anything compared
 against a number cached before then will show a step change that is not a bug.
+
+## Two render paths, and lualine is the lossy one
+
+`build_segments()` returns `{text, hl}` pairs; `statusline_string()` wraps each
+in `%#Group#...%*` and `plain_string()` throws the highlights away. A lualine
+component renders as a single colour, so the active/dim distinction only exists
+on the native statusline/winbar path. Do not try to recover it with escape
+codes inside a lualine component — lualine escapes them.
+
+Highlights are declared with `default = true` and **linked**, never given
+literal colours: the user's colorscheme stays in charge of the palette.
+
+`get_statusline()` and `get_plain()` run on every redraw and only ever return a
+cached string. The timer is the sole thing that touches disk. Never add a read,
+a `vim.fn`, or a JSON decode to that path.
 
 ## Formatting mirrors statusline.js
 

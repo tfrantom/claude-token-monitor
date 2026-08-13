@@ -1,19 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-// run-checks.js -- the suite-level test runner. Runs each project's own
-// verification script, whatever it happens to be called. Stdlib only; see
-// --help for the flags.
-//
-// Registry rather than glob, on purpose: the thing the runner most needs to
-// know about a check -- offline logic, needs a live server, one flag away
-// from a blocking popup -- is not in its filename. Discovery is used only to
-// notice new check-shaped files (auditUnregistered), never to decide what is
-// safe to execute. See projects/CLAUDE.md "Adding a check".
-//
-// Registry fields: safety 'safe' | 'unsafe' (held back unless
-// --include-unsafe), needsPort N (probed first; down means SKIP, not FAIL),
-// args (consent flags recorded here rather than defaulted into the script).
+// see projects/CLAUDE.md "Adding a check"
 
 const fs = require('fs');
 const http = require('http');
@@ -24,18 +12,12 @@ const ROOT = __dirname;
 const NODE = process.execPath;
 const DEFAULT_TIMEOUT_MS = 60_000;
 
-// Three-way exit contract: 0 passed, 1 failed, 3 "I cannot run here, and that
-// is not a failure" with the reason on the last line of output.
 const SKIP_EXIT_CODE = 3;
 
 function lastLine(text) {
   const lines = String(text).trim().split(/\r?\n/).filter((l) => l.trim());
   return lines.length ? lines[lines.length - 1].trim() : '';
 }
-
-// --------------------------------------------------------------------------
-// the registry
-// --------------------------------------------------------------------------
 
 const CHECKS = [
   {
@@ -61,13 +43,12 @@ const CHECKS = [
     script: 'packages/token-monitor-core/test-lifecycle.js',
     runner: 'node',
     args: ['--take-over'],
-    // Real model load off disk plus an idle countdown waited out in real time.
     timeoutMs: 300_000,
     safety: 'unsafe',
     what: 'End-to-end proof of the start/stop chain: a render starts a watcher, the watcher starts the shared llama-server and records its pid, concurrent renders start no second watcher, a second watcher is refused by the lock, and killing the last live session stops both. Isolated into a temp state dir, temp llama runtime dir, and a fake ~/.claude/sessions registry.',
     why: [
       'It asserts on the state of the SHARED port 8090, which it cannot do while sharing it.',
-      '--take-over pauses autostart, stops the running watcher, takes 8090 for a minute or two, and loads a ~2 GB model onto the GPU -- so every other Claude Code session on this machine loses its status line and its local-inference server meanwhile. Autostart is restored on exit and the next render brings the watcher back, but it is a real interruption. Without --take-over it refuses to run.',
+      '--take-over (without which it refuses to run) pauses autostart, stops the running watcher, takes 8090 for a minute or two and loads a ~2 GB model onto the GPU, so every other Claude Code session loses its status line and its local-inference server meanwhile. It is restored on exit, but it is a real interruption.',
       'Run it deliberately: node run-checks.js --only lifecycle --include-unsafe',
     ].join('\n      '),
   },
@@ -93,8 +74,6 @@ const CHECKS = [
     name: 'per-project-cost-attribution',
     script: 'projects/per-project-cost-attribution/verify.js',
     runner: 'node',
-    // Parses every transcript in ~/.claude/projects twice, and that set only
-    // grows -- a slow run here is expected, a hang is not.
     timeoutMs: 300_000,
     safety: 'safe',
     what: "Reconciles this project's parser against token-monitor-core's classifySession() over every real transcript, asserts per-cwd slices partition the session total, plus resolver spot-checks.",
@@ -105,7 +84,6 @@ const CHECKS = [
     script: 'projects/local-inference-skill/selftest.js',
     runner: 'node',
     needsPort: 8090,
-    // ~10 real completions against a 3B model. Slow but bounded.
     timeoutMs: 240_000,
     safety: 'safe',
     what: 'Smoke test for classify/extract/summarize: input parsing, schema round-trip, exit codes, and that an unreachable server fails fast instead of eating a 30s health-check timeout.',
@@ -121,23 +99,17 @@ const CHECKS = [
     what: "Ten cases against the popup prefilter: seven -DryRun judgment calls, two forwarding cases against stub-ask-question.ps1, one fail-open case pointed at a dead port.",
     why: [
       'Two independent reasons, either one sufficient:',
-      '(1) It is not a pass/fail oracle. It asserts nothing -- it prints an expectation next to each actual result for a human to eyeball, and exits 0 whatever the model said. A permanent meaningless green line is worse than not running it.',
+      '(1) Not a pass/fail oracle. It asserts nothing -- it prints an expectation next to each actual result for a human to eyeball, and exits 0 whatever the model said.',
       '(2) It drives ask-question-prefilter.ps1, the front door to a blocking WinForms popup with text-to-speech. Every case is defused today via -DryRun or the stub, but that safety lives in the arguments of ten call sites in a file this runner does not own.',
       'Run it deliberately, watching it: node run-checks.js --only ask-question --include-unsafe',
     ].join('\n      '),
   },
 ];
 
-// Named so the summary can say so out loud rather than have them silently
-// absent. Not counted as failures.
 const UNCOVERED = [
   ['packages/token-usage-skill', 'no check; lookup.js is a pure renderer over status.json'],
   ['packages/token-monitor.nvim', 'no check (lua)'],
 ];
-
-// --------------------------------------------------------------------------
-// arg parsing
-// --------------------------------------------------------------------------
 
 function parseArgs(argv) {
   const opts = { includeUnsafe: false, only: null, verbose: false, list: false, audit: true, timeout: null };
@@ -171,13 +143,6 @@ const HELP = `run-checks.js -- suite-level test runner
 Exit code is 0 only if every selected check passed and the audit found nothing
 unregistered. Skips (server down, or held back as unsafe) do not fail the run.`;
 
-// --------------------------------------------------------------------------
-// port probe
-// --------------------------------------------------------------------------
-
-// One short probe, no retry, mirroring llama-local-server's isUp(). This
-// separates "the server isn't there" (skip) from "the check disagreed with
-// reality" (fail); it is not meant to wait out a cold model load.
 function probePort(port, timeoutMs = 2000) {
   return new Promise((resolve) => {
     const req = http.get({ host: '127.0.0.1', port, path: '/health', timeout: timeoutMs }, (res) => {
@@ -192,27 +157,15 @@ function probePort(port, timeoutMs = 2000) {
   });
 }
 
-// --------------------------------------------------------------------------
-// running one check
-// --------------------------------------------------------------------------
-
 const MAX_CAPTURE = 200_000;
 
-// `script` is the single source of truth -- command line, working directory
-// and the audit's "is this registered?" lookup are all derived from it, so
-// they cannot disagree. Each check runs from its own directory: they all use
-// relative require()s and relative state paths.
 function buildCommand(check) {
   const file = path.basename(check.script);
   const extra = check.args || [];
   switch (check.runner) {
     case 'node':
-      // process.execPath, not 'node' -- same runtime as the runner rather
-      // than whatever PATH resolves to.
       return { cmd: NODE, args: [file, ...extra] };
     case 'powershell':
-      // -NonInteractive so a check that unexpectedly prompts dies instead of
-      // hanging until the timeout.
       return {
         cmd: 'powershell.exe',
         args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', file, ...extra],
@@ -223,6 +176,7 @@ function buildCommand(check) {
 }
 
 function runCheck(check, opts) {
+  // Checks use relative require()s and relative state paths; run each from its own dir.
   const cwd = path.join(ROOT, path.dirname(check.script));
   const timeoutMs = opts.timeout || check.timeoutMs || DEFAULT_TIMEOUT_MS;
   const started = Date.now();
@@ -282,10 +236,6 @@ function runCheck(check, opts) {
   });
 }
 
-// --------------------------------------------------------------------------
-// the staleness audit -- discovery used only to notice, never to execute
-// --------------------------------------------------------------------------
-
 const CHECK_NAME_RE = /(^|[-._])(tests?|selftest|verify|smoke|checks?)([-._]|$)/i;
 const SKIP_DIRS = new Set(['node_modules', '.git', 'state', 'drafts', 'proposed', 'models']);
 
@@ -310,7 +260,6 @@ function walk(dir, out = []) {
 
 function auditUnregistered() {
   const registered = new Set(CHECKS.map((c) => c.script.replace(/\\/g, '/').toLowerCase()));
-  // This runner is itself check-shaped; don't report it to itself.
   registered.add('run-checks.js');
   const found = [];
   for (const full of walk(ROOT)) {
@@ -322,10 +271,6 @@ function auditUnregistered() {
   }
   return found;
 }
-
-// --------------------------------------------------------------------------
-// output
-// --------------------------------------------------------------------------
 
 const PAD = Math.max(...CHECKS.map((c) => c.name.length)) + 2;
 const rule = (ch = '-') => console.log(ch.repeat(72));
@@ -354,10 +299,6 @@ function printList() {
   console.log('');
 }
 
-// --------------------------------------------------------------------------
-// main
-// --------------------------------------------------------------------------
-
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) {
@@ -379,8 +320,7 @@ async function main() {
   console.log(`${selected.length} registered check(s)${opts.includeUnsafe ? ', including unsafe-by-default' : ''}`);
   rule('=');
 
-  // Probe each distinct port once up front rather than per check.
-  const ports = [...new Set(selected.filter((c) => c.needsPort).map((c) => c.needsPort))];
+  const ports =[...new Set(selected.filter((c) => c.needsPort).map((c) => c.needsPort))];
   const portUp = new Map();
   for (const p of ports) {
     const up = await probePort(p);
@@ -402,9 +342,7 @@ async function main() {
       continue;
     }
 
-    // Ticker only for a real terminal -- a bare \r leaves garbage in a
-    // redirected log.
-    const interactive = process.stdout.isTTY && !opts.verbose;
+    const interactive =process.stdout.isTTY && !opts.verbose;
     if (interactive) process.stdout.write(`....  ${check.name.padEnd(PAD)} running`);
     const r = await runCheck(check, opts);
     if (interactive) process.stdout.write(`\r${' '.repeat(PAD + 16)}\r`);
@@ -412,9 +350,7 @@ async function main() {
     results.push({ check, ...r });
   }
 
-  // Printed once at the end so the per-check lines stay scannable, and not at
-  // all in --verbose, where it was already streamed.
-  const bad = results.filter((r) => r.status === 'FAIL' || r.status === 'TIMEOUT' || r.status === 'ERROR');
+  const bad =results.filter((r) => r.status === 'FAIL' || r.status === 'TIMEOUT' || r.status === 'ERROR');
   if (bad.length && !opts.verbose) {
     for (const r of bad) {
       console.log('');

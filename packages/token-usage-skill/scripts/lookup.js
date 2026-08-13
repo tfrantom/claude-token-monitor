@@ -1,10 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-// Runs from ~/.claude/skills/token-usage/, outside the suite, so it must
-// require() nothing from it and hardcode no suite path -- install.ps1 writes
-// the resolved paths to a sibling config.json. See CLAUDE.md "The installed
-// copy must stay self-contained".
+// Runs outside the suite: require() nothing from it, hardcode no suite path.
+// see CLAUDE.md "The installed copy must stay self-contained"
 
 const fs = require('fs');
 const path = require('path');
@@ -12,8 +10,6 @@ const path = require('path');
 function loadConfig() {
   const configPath = path.join(__dirname, '..', 'config.json');
   try {
-    // A BOM makes JSON.parse throw outright, and PowerShell 5.1 emits one
-    // unless the writer goes out of its way not to.
     return JSON.parse(fs.readFileSync(configPath, 'utf8').replace(/^﻿/, ''));
   } catch {
     console.log(`No config.json found at ${configPath} -- re-run install.ps1 from the suite's packages/token-usage-skill/ to regenerate it.`);

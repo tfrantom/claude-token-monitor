@@ -5,18 +5,14 @@
 .DESCRIPTION
   Judgment cases run with -DryRun (verdict as JSON, nothing called downstream).
   Forwarding cases run for real against scripts/stub-ask-question.ps1 via
-  -AskQuestionPath, exercising argument forwarding and stdout passthrough without a
-  popup or TTS.
+  -AskQuestionPath, so neither path reaches a popup or TTS.
 
-  Requires the chat server already up on 127.0.0.1:8090; it deliberately does not start
-  it, the same fail-open philosophy as the script under test. If model_reachable comes
-  back false, start `node packages/token-monitor-core/watcher.js`. The final case points
-  at a dead port on purpose, to verify the fail-open path.
+  Requires the chat server already up on 127.0.0.1:8090; it does not start it. If
+  model_reachable comes back false, start `node packages/token-monitor-core/watcher.js`.
+  The final case points at a dead port on purpose, to verify the fail-open path.
 
-  NOT a pass/fail harness -- it asserts nothing and exits 0 regardless. A 3B model's
-  exact wording isn't worth pinning down, so each case prints an expectation next to its
-  actual result for a human to eyeball. That, plus the blocking popup one flag away, is
-  why run-checks.js holds it back from unattended runs.
+  NOT a pass/fail harness -- it asserts nothing and exits 0 regardless. Each case prints
+  an expectation next to its actual result for a human to eyeball.
 #>
 
 $ErrorActionPreference = "Stop"
@@ -32,8 +28,6 @@ function Run-Case {
     $result | ForEach-Object { Write-Host "  $_" }
     Write-Host ""
 }
-
-# ---- judgment cases (-DryRun, nothing downstream is called) ----
 
 Run-Case "Obviously redundant -- detail already states the answer" `
     "verdict=skip" `
@@ -79,8 +73,6 @@ Run-Case "Embedded double quotes survive to the model call" `
        Question = 'Should I name the flag "force" or "overwrite"?'
        Detail   = 'Both appear elsewhere in the codebase; no convention established.' }
 
-# ---- forwarding cases (real run, stub instead of the popup) ----
-
 Run-Case "ASK path forwards to ask-question.ps1 and passes stdout through" `
     "STUB-ASK-QUESTION block, then 'canned answer from stub' as the last line" `
     @{ AskQuestionPath = $stub
@@ -92,8 +84,6 @@ Run-Case "SKIP path never reaches ask-question.ps1" `
     @{ AskQuestionPath = $stub
        Question = "Should I use tabs or spaces for this file?"
        Detail   = "The existing file already uses tabs consistently throughout." }
-
-# ---- fail-open case (model unreachable) ----
 
 Run-Case "Fail open when the local model is unreachable" `
     "model_reachable=false, verdict=ask, effective_question == original_question" `

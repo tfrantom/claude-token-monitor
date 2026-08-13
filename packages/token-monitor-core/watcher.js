@@ -73,7 +73,7 @@ function findSubagentTranscripts(sessionDir) {
   try {
     files = fs.readdirSync(dir);
   } catch {
-    return []; // no subagents dir is the common case, not an error
+    return [];
   }
   const out = [];
   for (const f of files) {
@@ -81,16 +81,12 @@ function findSubagentTranscripts(sessionDir) {
     let meta = {};
     try {
       meta = JSON.parse(fs.readFileSync(path.join(dir, f.replace(/\.jsonl$/, '.meta.json')), 'utf8'));
-    } catch {
-      /* meta is a nicety; totals still merge without it */
-    }
+    } catch {}
     const full = path.join(dir, f);
     let mtimeMs = 0;
     try {
       mtimeMs = fs.statSync(full).mtimeMs;
-    } catch {
-      /* raced with creation; treat as cold */
-    }
+    } catch {}
     out.push({
       path: full,
       mtimeMs,
@@ -104,17 +100,15 @@ function findSubagentTranscripts(sessionDir) {
 
 function isPidAlive(pid) {
   try {
-    process.kill(pid, 0); // signal 0: existence probe, sends nothing
+    process.kill(pid, 0);
     return true;
   } catch {
     return false;
   }
 }
 
-// `known` distinguishes "the registry says nobody is running" from "there is
-// no readable registry", and collapsing the two spins the watcher against the
-// status line -- see CLAUDE.md "Idle shutdown, and the reading that must not
-// be guessed".
+// `known` is not optional -- see CLAUDE.md "Idle shutdown, and the reading
+// that must not be guessed".
 function loadLiveSessions() {
   const live = new Set();
   let files;
@@ -156,10 +150,6 @@ function emptySemanticTotals() {
   };
 }
 
-// Time-boxed rather than count-boxed, so no number of new turns can stall the
-// poll loop. A failed turn gets a cooldown sentinel instead of an immediate
-// retry, so a down llama-server doesn't make every tick a wall of doomed
-// requests.
 async function backfillSemantic(semanticCache, parsedSessions) {
   const deadline = Date.now() + cfg.SEMANTIC_TIME_BUDGET_MS;
   let dirty = false;
@@ -181,9 +171,6 @@ async function backfillSemantic(semanticCache, parsedSessions) {
   if (dirty) writeJsonAtomic(cfg.SEMANTIC_CACHE_FILE, semanticCache);
 }
 
-// Sub-splits each block's already-prorated token count — never a competing
-// total. A block with no usable verdict lands in *_unclassified so its tokens
-// are still accounted for somewhere.
 function aggregateSemantic(turns, semanticCache) {
   const sem = emptySemanticTotals();
   for (const turn of turns) {
@@ -209,19 +196,17 @@ function aggregateSemantic(turns, semanticCache) {
   return sem;
 }
 
-// Sized to fill llama3.2's 4096-token window without overrunning it.
 const MAX_DIFF_CHARS = 7000;
 
 function shouldCheckForRename(entry, newTurnCount) {
-  if (!entry) return true; // never named yet -- always attempt, off the opening message
+  if (!entry) return true;
   if (newTurnCount === 0) return false;
   return Date.now() - (entry.named_at_ms || 0) >= cfg.RENAME_MIN_INTERVAL_MS;
 }
 
 const MIN_CONTEXT_CHARS = 600;
 
-// The newest message, plus only as many older ones as MIN_CONTEXT_CHARS needs.
-// Both the recency bias and the per-message front truncation are load-bearing
+// The recency bias and the per-message front truncation are both load-bearing
 // -- see CLAUDE.md "Three traps that had to be fixed together".
 function joinRecent(texts) {
   if (texts.length === 0) return '';
@@ -233,15 +218,12 @@ function joinRecent(texts) {
   return picked.map((t) => (t.length > perMessage ? t.slice(0, perMessage) : t)).join('\n\n');
 }
 
-// Two names sharing only these are not about the same thing.
 const TOPIC_STOPWORDS = new Set([
   'session', 'sessions', 'work', 'working', 'task', 'tasks', 'issue', 'issues',
   'and', 'the', 'a', 'an', 'for', 'with', 'to', 'of', 'in', 'on', 'is', 'it',
   'setup', 'project', 'update', 'updates', 'new', 'demo',
 ]);
 
-// Names come back in mixed shapes ("Tagoto Exploration", "DebuggingWatcherCache"),
-// so split camelCase as well as separators.
 function topicWords(name) {
   return new Set(
     String(name || '')
@@ -252,8 +234,6 @@ function topicWords(name) {
   );
 }
 
-// Any shared significant word means "still the same subject", which stops the
-// name flapping between synonymous rewordings of one topic.
 function sameTopic(a, b) {
   const wa = topicWords(a);
   if (wa.size === 0) return false;
@@ -267,9 +247,8 @@ async function getOrUpdateName(namesCache, sessionId, userTexts) {
   let entry = namesCache[sessionId];
   if (typeof entry === 'string') entry = { name: entry, named_at_ms: 0, named_at_turn_count: 0 }; // pre-rename cache format
   const storedTurns = entry ? entry.named_at_turn_count ?? 0 : 0;
-  // A counter above the current count was written against a different basis
-  // and would freeze this session's name forever -- clamp and force one
-  // re-sync. See CLAUDE.md "Changing what counts as a turn strands the cache".
+  // Keep this clamp -- see CLAUDE.md "Changing what counts as a turn strands
+  // the cache".
   const staleBasis = storedTurns > userTexts.length;
   const seenTurns = Math.min(storedTurns, userTexts.length);
   const newTexts = userTexts.slice(seenTurns);
@@ -287,9 +266,8 @@ async function getOrUpdateName(namesCache, sessionId, userTexts) {
   // text is reconsidered next tick rather than dropped from the seen window.
   if (!staleBasis && newTexts.join('').length < cfg.RENAME_MIN_NEW_CHARS) return entry.name;
 
-  // A rolling window, not just the unseen messages, and the model is only ever
-  // asked to NAME -- sameTopic makes the change decision. Both are measured
-  // findings; see CLAUDE.md "Naming".
+  // A rolling window, and the model is only ever asked to NAME -- both are
+  // measured findings, see CLAUDE.md "Naming".
   const recent = joinRecent(userTexts.slice(-cfg.RENAME_RECENT_MESSAGES));
   const fresh = await nameSession(recent);
 
@@ -302,15 +280,11 @@ async function getOrUpdateName(namesCache, sessionId, userTexts) {
   return namesCache[sessionId].name;
 }
 
-// Folds a subagent sidechain's parse into its parent session's. Deliberately
-// does NOT merge `userTexts` -- those are the prompt this session sent to the
-// agent, and merging them lets a background task rename the session. See
-// CLAUDE.md "Naming".
+// Deliberately does NOT merge `userTexts` -- see CLAUDE.md "Naming".
 function mergeSubagent(parent, sub) {
   for (const [key, value] of Object.entries(sub.totals)) {
     if (typeof value === 'number') parent.totals[key] = (parent.totals[key] || 0) + value;
   }
-  // Turn ids are globally unique, so the semantic cache keys can't collide.
   parent.turns.push(...sub.turns);
   for (const m of sub.models) if (!parent.models.includes(m)) parent.models.push(m);
   if (sub.lastTimestamp && (!parent.lastTimestamp || sub.lastTimestamp > parent.lastTimestamp)) {
@@ -318,15 +292,13 @@ function mergeSubagent(parent, sub) {
   }
 }
 
-// Currently-running agents only, in UI order. Liveness is transcript write
-// activity, NOT whether the Agent tool_use has a tool_result -- see CLAUDE.md
-// "Running vs finished subagents" before changing either.
+// Liveness is transcript write activity, NOT whether the Agent tool_use has a
+// tool_result -- see CLAUDE.md "Running vs finished subagents".
 function buildAgentList(parsed, byToolUseId) {
   const agents = [];
   const liveCutoff = Date.now() - cfg.AGENT_ACTIVE_WINDOW_MS;
   for (const use of parsed.agentUses || []) {
     const hit = byToolUseId.get(use.toolUseId);
-    // No transcript yet == just spawned, still counts as running.
     if (hit && hit.meta.mtimeMs && hit.meta.mtimeMs < liveCutoff) continue;
     const t = hit ? hit.parsed.totals : null;
     agents.push({
@@ -345,8 +317,7 @@ async function tick(namesCache, semanticCache) {
   const parsedByFile = [];
 
   for (const f of files) {
-    // Flagged, not dropped -- see CLAUDE.md "Ended sessions stay in the data
-    // and are hidden by the presentation".
+    // Flagged, not dropped -- see CLAUDE.md "Ended sessions stay in the data".
     const ended = !liveSessionIds.has(f.sessionId);
     const parsed = classifySession(f.path);
     if (!parsed) continue;
@@ -366,7 +337,6 @@ async function tick(namesCache, semanticCache) {
 
   const sessions = {};
   for (const { f, parsed, ended, agents } of parsedByFile) {
-    // An ended session's name is final; don't spend a model call on it.
     const name = ended
       ? getCachedName(namesCache, f.sessionId)
       : await getOrUpdateName(namesCache, f.sessionId, parsed.userTexts);
@@ -379,10 +349,8 @@ async function tick(namesCache, semanticCache) {
       mtime_ms: f.mtimeMs,
       models: parsed.models,
       totals: parsed.totals,
-      agents: agents || [], // empty array, never absent, so consumers need no presence check
+      agents: agents || [],
     };
-    // Absent rather than zeroed when disabled: that is the pre-semantic-layer
-    // shape both status bars already render.
     if (cfg.SEMANTIC_CLASSIFICATION_ENABLED) session.semantic = aggregateSemantic(parsed.turns, semanticCache);
     sessions[f.sessionId] = session;
   }
@@ -392,8 +360,7 @@ async function tick(namesCache, semanticCache) {
   return { liveCount: liveSessionIds.size, registryKnown };
 }
 
-// A live PID means refuse to start; a dead one means the previous watcher
-// crashed and we take over. See CLAUDE.md "The singleton rule".
+// See CLAUDE.md "The singleton rule".
 function acquireLock() {
   const lockPath = path.join(cfg.STATE_DIR, 'watcher.lock');
   try {
@@ -404,7 +371,7 @@ function acquireLock() {
         process.kill(prev, 0);
         alive = true;
       } catch {
-        alive = false; // ESRCH: stale lock from a crashed run
+        alive = false;
       }
       if (alive) {
         console.error(`[watcher] another watcher is already running (pid ${prev}).`);
@@ -414,9 +381,7 @@ function acquireLock() {
       }
       console.warn(`[watcher] taking over stale lock from dead pid ${prev}`);
     }
-  } catch {
-    /* no lock file yet -- normal first start */
-  }
+  } catch {}
   fs.writeFileSync(lockPath, String(process.pid));
   return lockPath;
 }
@@ -426,17 +391,12 @@ async function main() {
   const releaseLock = () => {
     try {
       if (Number(fs.readFileSync(lockPath, 'utf8').trim()) === process.pid) fs.unlinkSync(lockPath);
-    } catch {
-      /* already gone, or taken over */
-    }
+    } catch {}
   };
-  // Registered before ensureShared() below, because a failed llama-server
-  // spawn is the likeliest way a fresh install dies and it must not leave the
-  // lock behind.
+  // Registered before the ensureShared() below: a failed llama-server spawn
+  // must not leave the lock behind.
   process.on('exit', releaseLock);
 
-  // ensureShared, not ensureRunning: the shared instance must outlive any one
-  // process, so its ownership lives on disk. See llama-local-server/managed.js.
   const shared = await managed.ensureShared({ startedBy: `watcher pid ${process.pid}` });
   console.log(
     `[watcher] llama-server ${shared.started ? 'started' : 'reused running instance'} on port ${shared.port}` +
@@ -448,11 +408,8 @@ async function main() {
 
   let shuttingDown = false;
   const shutdown = async (why) => {
-    if (shuttingDown) return; // a second SIGINT must not race the first one's kill
+    if (shuttingDown) return;
     shuttingDown = true;
-    // stopAll, not stopShared: once the last session is gone, nothing this
-    // suite started should survive it -- including dedicated instances whose
-    // one-shot CLI exited long ago.
     const results = await managed.stopAll({ reason: why });
     if (!results.length) {
       console.log(`[watcher] nothing managed to stop (${why})`);
@@ -467,9 +424,8 @@ async function main() {
     releaseLock();
     process.exit(0);
   };
-  // The handlers must not exit themselves: process.exit() would cut the async
-  // kill short. (They only ever run for Ctrl+C -- an external stop on Windows
-  // is always abrupt, see the suite CLAUDE.md.)
+  // The handlers must not exit themselves; process.exit() would cut the async
+  // kill short.
   process.on('SIGINT', () => void shutdown('interrupted'));
   process.on('SIGTERM', () => void shutdown('terminated'));
 
@@ -478,14 +434,12 @@ async function main() {
     console.log(`[watcher] will exit and stop llama-server after ${cfg.IDLE_SHUTDOWN_MS}ms with no live sessions`);
   }
 
-  // Time-based rather than a tick counter, so POLL_INTERVAL_MS can change
-  // without silently changing the grace period.
   let idleSince = null;
 
   for (;;) {
     try {
       // Every tick, not just at startup -- see CLAUDE.md "The watcher
-      // re-ensures the shared server every tick". Costs one localhost /health.
+      // re-ensures the shared server every tick".
       if (!(await managed.isUpFor(shared.claim))) {
         const again = await managed.ensureShared({ startedBy: `watcher pid ${process.pid}` });
         console.log(
@@ -493,14 +447,9 @@ async function main() {
             `${again.pid ? ` (pid ${again.pid})` : ''}`
         );
       } else {
-        // Not for reaping -- the shared instance is 'supervised' -- but a
-        // fresh timestamp is what makes an abandoned record obvious.
         managed.touch(shared.claim);
       }
 
-      // The watcher is the only long-lived process guaranteed to be up
-      // whenever this matters, so it reaps dedicated instances machine-wide,
-      // including ones started by other repos.
       for (const a of await managed.reap()) {
         if (a.action !== 'cleared-stale-record') {
           console.log(`[watcher] ${a.action} ${a.claim} (pid ${a.pid})${a.detail ? ` -- ${a.detail}` : ''}`);
@@ -509,8 +458,6 @@ async function main() {
 
       const { liveCount, registryKnown } = await tick(namesCache, semanticCache);
 
-      // Only an authoritative zero counts; an unreadable registry leaves the
-      // watcher up. See CLAUDE.md "Idle shutdown".
       if (cfg.IDLE_SHUTDOWN_MS > 0 && registryKnown && liveCount === 0) {
         if (idleSince === null) {
           idleSince = Date.now();
@@ -530,9 +477,6 @@ async function main() {
   }
 }
 
-// Daemon only when invoked directly, so tests can require the naming helpers.
-// The .catch() turns a startup throw (usually a bad LLAMA_SERVER_EXE path)
-// into the one line that says what to fix, instead of an unhandled rejection.
 if (require.main === module) {
   main().catch((err) => {
     console.error(`[watcher] failed to start: ${err.message}`);

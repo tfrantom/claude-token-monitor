@@ -4,8 +4,19 @@ Extensions to the suite, one folder per idea. See [`README.md`](README.md) for
 what each one is, and the [suite CLAUDE.md](../CLAUDE.md) for rules that apply
 everywhere.
 
-Read a project's README before touching its code, and correct it in place as
-you learn things rather than leaving it stale.
+**Each project has its own `CLAUDE.md`** — that is where its design, contracts
+and traps live, and where anything you learn about one project belongs. This
+file is only for what applies across all of them. A project's `README.md`
+answers what/needs/how-to-run and nothing else; if you are about to add a *why*
+to a README, it goes in that project's `CLAUDE.md` instead.
+
+| Project | Local notes |
+|---|---|
+| [`local-inference-skill`](local-inference-skill/CLAUDE.md) | Installed-copy rule, the invocation contract, the ownership record path |
+| [`cost-anomaly-alerts`](cost-anomaly-alerts/CLAUDE.md) | The dedup gate, notification delivery |
+| [`ask-question-prefilter`](ask-question-prefilter/CLAUDE.md) | Wrapper-not-patch, the suppression bar, turning it on |
+| [`usage-history-rollups`](usage-history-rollups/CLAUDE.md) | Snapshot triggers, the history schema, cumulative-not-delta |
+| [`per-project-cost-attribution`](per-project-cost-attribution/CLAUDE.md) | Per-turn attribution, cwd→project resolution, the slice schema |
 
 ## These are finished packages that live under `projects/`
 
@@ -40,8 +51,12 @@ first check to fail when they drift.
 
 Hand-claimed, no allocator. `netstat` first, then record it in the table in
 [`README.md`](README.md). Use `ensureRunningFor(name, opts)` rather than
-hardcoding a port in your own config. Kill `llama-server.exe` by PID or port,
-never by image name.
+hardcoding a port in your own config.
+
+A dedicated instance is spawned `detached: true` and stays resident until an
+explicit kill, so expect more than one `llama-server.exe` on a busy machine.
+Kill by PID or port, **never** by image name — you will take out a server
+another session or another repo is using.
 
 ## PowerShell 5.1 traps these projects hit
 

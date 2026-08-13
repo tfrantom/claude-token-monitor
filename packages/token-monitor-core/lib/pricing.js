@@ -1,13 +1,8 @@
 'use strict';
 
-// $ per 1M tokens, first-party Anthropic API rates. Cache write/read are
-// multipliers on the input rate, applied in costForTurn.
-//
-// No long-context premium and no batch discount, both deliberately -- see
-// CLAUDE.md "Pricing" before adding either.
+// $ per 1M tokens, first-party Anthropic API rates. Read CLAUDE.md "Pricing"
+// before changing anything here.
 
-// A turn timestamped after `until` prices at the standard rate automatically,
-// so a closed window needs no edit.
 const SONNET_5_INTRO_UNTIL = Date.parse('2026-09-01T00:00:00Z');
 
 const MODELS = [
@@ -16,7 +11,6 @@ const MODELS = [
     name: 'Claude Sonnet 5',
     input: 3.0,
     output: 15.0,
-    // Introductory pricing through 2026-08-31.
     dated: [{ until: SONNET_5_INTRO_UNTIL, input: 2.0, output: 10.0 }],
   },
   {
@@ -24,7 +18,6 @@ const MODELS = [
     name: 'Claude Opus 5',
     input: 5.0,
     output: 25.0,
-    // Same model, premium pricing; the API reports usage.speed === 'fast'.
     fast: { input: 10.0, output: 50.0 },
   },
   { match: /haiku-4-5/, name: 'Claude Haiku 4.5', input: 1.0, output: 5.0 },
@@ -34,21 +27,20 @@ const MODELS = [
     name: 'Claude Opus 4.8',
     input: 5.0,
     output: 25.0,
-    // Supports fast mode, but no premium rate is published. Left unset on
-    // purpose: costForTurn flags it `fastUnpriced` rather than guessing.
+    // Fast mode with no published premium rate: left unset on purpose, so
+    // costForTurn flags it rather than guessing.
   },
   { match: /opus-4-7|opus-4-6|opus-4-5|opus-4-1|opus-4-0/, name: 'Claude Opus 4.x', input: 5.0, output: 25.0 },
   { match: /sonnet-4/, name: 'Claude Sonnet 4.x', input: 3.0, output: 15.0 },
 ];
 
-// First match wins, so MODELS is ordered most-specific first.
+// First match wins: MODELS must stay ordered most-specific first.
 function priceFor(modelId) {
   if (!modelId) return null;
   return MODELS.find((m) => m.match.test(modelId)) || null;
 }
 
-// Fast-mode premium supersedes a dated rate; a dated window supersedes the
-// standard one. Keyed on the turn's timestamp, never wall clock.
+// Keyed on the turn's timestamp, never wall clock.
 function rateFor(model, { speed, atMs } = {}) {
   if (speed === 'fast' && model.fast) {
     return { input: model.fast.input, output: model.fast.output, fastUnpriced: false };
@@ -65,8 +57,6 @@ function rateFor(model, { speed, atMs } = {}) {
   return { input: model.input, output: model.output, fastUnpriced };
 }
 
-// turn: { model, speed, at_ms, input_tokens, cache_read_input_tokens,
-//         cache_creation_1h, cache_creation_5m, output_tokens }
 function costForTurn(turn) {
   const model = priceFor(turn.model);
   if (!model) return { cost: 0, priced: false, fastUnpriced: false };

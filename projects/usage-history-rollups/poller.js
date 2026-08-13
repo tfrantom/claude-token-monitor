@@ -1,19 +1,6 @@
 'use strict';
 
-// Standalone rollup poller. Reads token-monitor-core's status.json by path on
-// its own cadence; nothing under packages/ is imported or modified.
-//
-// Three snapshot triggers:
-//   1. `ended`    -- session read ended: true on ENDED_CONFIRM_POLLS
-//                    consecutive polls. Written once per session lifetime.
-//   2. `vanished` -- session left status.json without ever being finalized,
-//                    using last-known totals. Covers the gaps `ended` can't.
-//   3. `periodic` -- a still-live session every PERIODIC_SNAPSHOT_MS, so a
-//                    long session gets a time-series rather than one lump.
-//
-// Run:  node poller.js
-// Fast cadence for testing (never touches packages/):
-//   ROLLUP_POLL_INTERVAL_MS=3000 ROLLUP_PERIODIC_SNAPSHOT_MS=10000 node poller.js
+// see CLAUDE.md "When it snapshots"
 
 const fs = require('fs');
 const cfg = require('./config');
@@ -50,18 +37,12 @@ function readHistoryLines(file) {
     if (!line.trim()) continue;
     try {
       entries.push(JSON.parse(line));
-    } catch {
-      // A torn final line (killed mid-append) is the only way this happens.
-      // Skipping it is strictly better than refusing to read the whole log.
-    }
+    } catch { }
   }
   return entries;
 }
 
-// Returns null for anything unreadable, and the caller skips the poll. That
-// distinction is load-bearing: "couldn't read status.json" must never be
-// mistaken for "zero sessions are active", which would roll up every live
-// session as vanished.
+// null means "skip this poll" -- see CLAUDE.md "Unreadable is not no sessions"
 function readStatus() {
   let raw;
   try {
@@ -79,33 +60,25 @@ function readStatus() {
   return parsed;
 }
 
-// Cumulative, NOT a delta: `totals` is the session's lifetime total as of
-// `ts`. Summing every line for a session multiply-counts it -- consumers take
-// the latest line, or difference consecutive ones (see report.js).
+// Cumulative, NOT a delta -- see CLAUDE.md "Entries are cumulative, not deltas"
 function snapshotEntry(reason, sessionId, seen) {
   const s = seen.session;
   return {
     v: cfg.SCHEMA_VERSION,
     ts: new Date().toISOString(),
-    reason, // 'ended' | 'vanished' | 'periodic'
+    reason,
     session_id: sessionId,
-    project: s.project, // Claude Code's coarse per-terminal grouping, e.g. "C--projects"
+    project: s.project,
     name: s.name,
     models: s.models,
-    first_seen_at: seen.first_seen_at, // first poll this poller saw the session, not session start
-    last_activity: s.last_activity, // last transcript timestamp, from the watcher
+    first_seen_at: seen.first_seen_at,
+    last_activity: s.last_activity,
     totals: s.totals,
     semantic: s.semantic || null,
-    // Join point for per-project-cost-attribution's finer repo/cwd dimension.
-    // Null until status.json carries such a breakdown; null is a valid value
-    // for the field, so older lines are not a schema break.
     by_project: s.by_project || null,
   };
 }
 
-// Per-session bookkeeping persisted to last-seen.json, so a poller restart
-// doesn't lose in-flight state or re-append finals for sessions already
-// rolled up.
 function trackNew(session, now) {
   return {
     session: session,
@@ -119,13 +92,11 @@ function trackNew(session, now) {
 function poll(state, nowMs) {
   const now = nowMs === undefined ? Date.now() : nowMs;
   const status = readStatus();
-  if (!status) return { state, wrote: [] }; // nothing trustworthy this poll -- skip, don't infer
+  if (!status) return { state, wrote: [] };
 
   const current = status.sessions;
   const wrote = [];
 
-  // Sessions that left status.json entirely. A fallback only: one that ended
-  // cleanly was finalized below, ~30 minutes before it aged out.
   for (const sessionId of Object.keys(state)) {
     if (current[sessionId]) continue;
     if (!state[sessionId].finalized) {
@@ -150,13 +121,10 @@ function poll(state, nowMs) {
         seen.finalized = true;
         seen.last_snapshot_at = now;
       }
-      // No periodic sampling once finalized -- its totals can't change.
       continue;
     }
 
-    // Live. A flicker must not accumulate toward the confirm threshold, and
-    // `claude --resume` reuses the session id, so its continued cost deserves
-    // a second final snapshot when it ends again.
+    // A flicker must not accumulate toward the confirm threshold; a resume must re-finalize.
     seen.ended_polls = 0;
     seen.finalized = false;
 
@@ -171,10 +139,6 @@ function poll(state, nowMs) {
   return { state, wrote };
 }
 
-// Rebuilds "already finalized" from history.jsonl when last-seen.json is
-// missing, so losing it while an ended session is still inside its 30-minute
-// window doesn't append a duplicate final. A session seen live again clears
-// the flag, so this can't suppress a resumed session's second end.
 function seedFinalizedFromHistory(state) {
   const finalized = new Set();
   for (const e of readHistoryLines(cfg.HISTORY_FILE)) {

@@ -1,15 +1,9 @@
 'use strict';
 
-// Reads history.jsonl back as daily or per-session totals.
+// The reference implementation of the cumulative-snapshot differencing --
+// see CLAUDE.md "Entries are cumulative, not deltas". Do not re-derive it.
 //
-//   node report.js              # last 7 days, daily buckets
-//   node report.js --days 30
-//   node report.js --by session # per-session totals instead of per-day
-//   node report.js --json
-//
-// Entries are cumulative per session, not deltas: a session with three
-// snapshots at $2 / $5 / $9 cost $9 total, not $16. This file is the reference
-// implementation of the differencing -- use it rather than re-deriving it.
+//   node report.js [--days 30] [--by session] [--json]
 
 const cfg = require('./config');
 const { readHistoryLines } = require('./poller');
@@ -34,9 +28,6 @@ function addInto(target, src) {
   for (const k of TOTAL_KEYS) target[k] += src[k] || 0;
 }
 
-// The first snapshot of a session contributes its full cumulative total --
-// everything before it was never observed. Deltas are clamped at zero so a
-// transcript re-parse or a resume can't produce negative cost.
 function toDeltas(entries) {
   const bySession = new Map();
   for (const e of entries) {
@@ -80,9 +71,7 @@ function main() {
   }
 
   const cutoff = Date.now() - args.days * 24 * 60 * 60 * 1000;
-  // Deltas over the FULL history, then filtered. The other order makes the
-  // first in-window snapshot of an older session dump its entire pre-window
-  // lifetime into the report.
+  // Difference over the FULL history, then filter -- never the other way round.
   const deltas = toDeltas(all).filter((d) => Date.parse(d.ts) >= cutoff);
 
   const buckets = new Map();
