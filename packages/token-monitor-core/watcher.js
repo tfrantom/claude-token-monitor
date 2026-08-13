@@ -5,7 +5,7 @@ const path = require('path');
 const cfg = require('./config');
 const { classifySession } = require('./lib/transcript');
 const managed = require('../llama-local-server/managed');
-const { nameSession } = require('./lib/llm-client');
+const { nameSession, cleanName } = require('./lib/llm-client');
 const { classifyTurn } = require('./lib/semantic-classifier');
 const signals = require('./lib/signals');
 
@@ -277,7 +277,16 @@ async function getOrUpdateName(namesCache, sessionId, userTexts, project) {
   const seenTurns = Math.min(storedTurns, userTexts.length);
   const newTexts = userTexts.slice(seenTurns);
 
-  if (!staleBasis && !shouldCheckForRename(entry, newTexts.length)) return entry ? entry.name : null;
+  // A name accepted by an older, weaker cleanName() stays on the bar forever
+  // otherwise: renames only fire on new user turns, so a session that has
+  // stopped typing keeps whatever it was last given. Re-validating on read is
+  // what makes the cache self-correcting when the guard improves -- it is how
+  // "Labeling Conversational Dialogue Task" would have cleared itself.
+  const cachedIsInvalid = !!(entry && entry.name && !cleanName(entry.name));
+
+  if (!staleBasis && !cachedIsInvalid && !shouldCheckForRename(entry, newTexts.length)) {
+    return entry ? entry.name : null;
+  }
 
   if (!entry) {
     const name = await nameSession(userTexts[0]);
@@ -288,7 +297,7 @@ async function getOrUpdateName(namesCache, sessionId, userTexts, project) {
 
   // Returning early leaves named_at_turn_count untouched on purpose, so this
   // text is reconsidered next tick rather than dropped from the seen window.
-  if (!staleBasis && newTexts.join('').length < cfg.RENAME_MIN_NEW_CHARS) return entry.name;
+  if (!staleBasis && !cachedIsInvalid && newTexts.join('').length < cfg.RENAME_MIN_NEW_CHARS) return entry.name;
 
   // A rolling window, and the model is only ever asked to NAME -- both are
   // measured findings, see CLAUDE.md "Naming".
@@ -296,7 +305,7 @@ async function getOrUpdateName(namesCache, sessionId, userTexts, project) {
   const fresh = await nameSession(recent);
 
   namesCache[sessionId] = {
-    name: fresh && !sameTopic(fresh, entry.name, projectStopwords(project)) ? fresh : entry.name,
+    name: fresh && (cachedIsInvalid || !sameTopic(fresh, entry.name, projectStopwords(project))) ? fresh : entry.name,
     named_at_ms: Date.now(),
     named_at_turn_count: userTexts.length,
   };

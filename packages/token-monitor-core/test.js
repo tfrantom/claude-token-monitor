@@ -292,6 +292,15 @@ check('topicWords splits camelCase as well as separators', () => {
   assert.ok(topicWords('debugging-watcher-cache').has('watcher'));
 });
 
+check('a cached name that the current guard rejects is not trusted', () => {
+  // Renames only fire on new user turns, so a bad name accepted by an older
+  // guard sits on the bar forever once the user stops typing. Re-validating
+  // the cache on read is what makes the guard retroactive.
+  const { cleanName } = require('./lib/llm-client');
+  assert.strictEqual(cleanName('Labeling Conversational Dialogue Task'), null, 'guard must reject it');
+  assert.ok(cleanName('Tag-Goto Feature Summary'), 'and accept a real one');
+});
+
 check('a name that narrates the titling job is rejected', () => {
   // Both failure modes of a 3B handed a message addressed to an assistant:
   // it answers ("I apologize..."), or it describes the job it was given

@@ -74,20 +74,25 @@ function renderSession(s, isActive) {
   const agents = s.agents || [];
   const mark = activityMark(s.activity);
 
+  // One glyph, one meaning, in both positions: the same session must not
+  // render differently depending on whose bar it appears in. `●` used to be
+  // the active-session marker AND the no-activity fallback, so a session
+  // showed `●` in its own bar and nothing in everyone else's. The active
+  // session is already identified by bold cyan and by being first.
+  const dot = mark ? `${mark.color}${mark.glyph}${RESET} ` : '';
+
   if (isActive) {
     const parts = agents.map((a) => `${fmtK(a.tokens)}-${fmtCostShort(a.cost_usd).replace('$', '')}`);
     const agentStr = parts.length ? `${parts.join('/')} · ` : '';
     const detail = s.activity && s.activity.detail ? ` ${DIM}${s.activity.detail}${RESET}` : '';
-    const dot = mark ? `${mark.color}${mark.glyph}${RESET}` : `${CYAN}●${RESET}`;
     return (
-      `${dot} ${BOLD}${CYAN}${s.name}${RESET}${detail} ` +
+      `${dot}${BOLD}${CYAN}${s.name}${RESET}${detail} ` +
       `${DIM}(${agentStr}${fmtK(totalTokens(t))}/${fmtCostShort(t.cost_usd)})${RESET}`
     );
   }
 
-  const dot = mark ? `${mark.color}${mark.glyph}${RESET}` : '';
   const badge = agents.length ? `${DIM} ${agents.length}A${RESET}` : '';
-  return `${dot}${dot ? ' ' : ''}${DIM}${s.name}${RESET}${badge}${DIM} ${fmtCostShort(t.cost_usd)}${RESET}`;
+  return `${dot}${DIM}${s.name}${RESET}${badge}${DIM} ${fmtCostShort(t.cost_usd)}${RESET}`;
 }
 
 function watcherMessage(watcherState) {

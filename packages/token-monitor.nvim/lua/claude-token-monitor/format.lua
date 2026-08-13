@@ -100,15 +100,15 @@ function M.build_segments(selection, opts)
   local hl = opts.highlights
   local segments = {}
 
+  -- One glyph, one meaning, in both positions -- see CLAUDE.md "Activity
+  -- states must render, even unknown ones". Must match statusline.js.
   if selection.active then
     local s = selection.active
     local icon, icon_hl, detail = M.activity_parts(s, opts)
     if icon then
-      table.insert(segments, { text = icon, hl = icon_hl })
-      table.insert(segments, { text = " " .. s.name, hl = hl.active_name })
-    else
-      table.insert(segments, { text = icons.active .. " " .. s.name, hl = hl.active_name })
+      table.insert(segments, { text = icon .. " ", hl = icon_hl })
     end
+    table.insert(segments, { text = s.name, hl = hl.active_name })
     if detail then
       table.insert(segments, { text = " " .. detail, hl = hl.dim })
     end

@@ -74,10 +74,20 @@ check("an all-null activity renders instead of throwing", function()
   assert_eq(out:find("Session") ~= nil, true, "session name still rendered")
 end)
 
-check("a null activity falls back to the plain active icon", function()
+check("the same session renders identically active or not", function()
+  -- `●` used to be both the active-session marker and the no-activity
+  -- fallback, so one session showed `●` in its own bar and nothing in every
+  -- other bar. One glyph, one meaning.
   local d = reader.denil(vim.json.decode('{"state":null,"detail":null}'))
-  local out = render(session({ activity = d }))
-  assert_eq(out:find(opts.icons.active, 1, true) ~= nil, true, "expected the default icon")
+  local active = format.plain_string({ active = session({ activity = d }), others = {} }, opts)
+  assert_eq(active:find(opts.icons.active, 1, true), nil, "no activity means no glyph, even when active")
+
+  local s = session({ activity = { state = "done" } })
+  local as_active = format.plain_string({ active = s, others = {} }, opts)
+  local as_other = format.plain_string({ active = nil, others = { s } }, opts)
+  local g = opts.activity_icons.done
+  assert_eq(as_active:find(g, 1, true) ~= nil, true, "glyph when active")
+  assert_eq(as_other:find(g, 1, true) ~= nil, true, "same glyph when not active")
 end)
 
 -- ------------------------------------------------------------- activity UI --
