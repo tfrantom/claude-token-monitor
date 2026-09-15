@@ -19,6 +19,10 @@ function loadConfig() {
 
 const { statusFile: STATUS_FILE, watcherCmd: WATCHER_CMD } = loadConfig();
 
+// Mirrors token-monitor-core's STATUS_MAX_AGE_MS, which cannot be required
+// from here -- see CLAUDE.md "The installed copy must stay self-contained".
+const STATUS_MAX_AGE_MS = 60 * 1000;
+
 function parseArgs(argv) {
   const args = { json: false, session: null, project: null };
   for (let i = 0; i < argv.length; i++) {
@@ -92,9 +96,28 @@ function main() {
     return;
   }
 
-  const sessions = Object.values(status.sessions || {});
+  const snapshotAge = Date.now() - Date.parse(status.updated_at || '');
+  if (!(snapshotAge <= STATUS_MAX_AGE_MS)) {
+    console.log(
+      `Usage data is stale (last written ${status.updated_at || 'never'}) -- the watcher is not running, so these\n` +
+        `numbers are a frozen snapshot, not live sessions.\nStart it with: ${WATCHER_CMD}`
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  // Ended sessions linger in status.json for other consumers; every bar drops
+  // them itself, and so must this. Counting them made "active session(s)" and
+  // the total both wrong.
+  const all = Object.values(status.sessions || {});
+  const sessions = all.filter((s) => !s.ended);
+  const endedCount = all.length - sessions.length;
   if (sessions.length === 0) {
-    console.log('Watcher is running but reports no active sessions right now.');
+    console.log(
+      endedCount
+        ? `Watcher is running; no active sessions right now (${endedCount} recently ended).`
+        : 'Watcher is running but reports no active sessions right now.'
+    );
     return;
   }
 
@@ -116,6 +139,9 @@ function main() {
   console.log(`Claude Code token usage (as of ${status.updated_at})\n`);
   console.log(blocks.join('\n\n'));
   console.log(`\nΣ total across ${sessions.length} active session(s): ${fmtCost(grandTotal)}`);
+  if (endedCount) {
+    console.log(`(${endedCount} recently-ended session(s) not counted — use --json to see them)`);
+  }
   if (!matchedCurrent) {
     console.log('(none of these matched the current session/project -- shown by recency instead)');
   }

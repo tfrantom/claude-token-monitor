@@ -161,6 +161,17 @@ machine:
 4. **Resolver spot-checks** — the four cwd→project decisions above, asserted as
    test cases rather than left as prose.
 
+**Known intermittent, suspected not confirmed.** `verify.js` was observed
+failing reconciliation once in five consecutive runs on 2026-08-27, passing the
+other four with no code change in between. The likely cause is inherent to what
+it does: it reads every transcript **twice** — once through `classifySession()`
+and once through this project's parser — and the transcript of the session
+*running the check* is being appended to the whole time. A turn landing between
+the two reads makes them legitimately disagree. If you see a one-off red here,
+re-run before investigating; a real drift fails every time. Confirming it means
+snapshotting each transcript to a temp copy and reconciling against that, which
+would also make the check deterministic.
+
 It exits **3, not 1**, when there are no transcripts to reconcile, which
 `run-checks.js` reads as SKIP — see [`../CLAUDE.md`](../CLAUDE.md) "Adding a
 check". Nothing to reconcile is not a reconciliation that disagreed, and on a

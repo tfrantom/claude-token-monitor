@@ -22,6 +22,10 @@ module.exports = {
   ACTIVE_SESSION_WINDOW_MS: 30 * 60 * 1000,
   POLL_INTERVAL_MS: 5000,
 
+  // Must stay well above the worst-case tick -- see CLAUDE.md "A snapshot is
+  // only as live as the watcher that wrote it".
+  STATUS_MAX_AGE_MS: Number(process.env.TOKEN_MONITOR_STATUS_MAX_AGE_MS ?? 60 * 1000),
+
   IDLE_SHUTDOWN_MS: Number(process.env.TOKEN_MONITOR_IDLE_SHUTDOWN_MS ?? 2 * 60 * 1000),
 
   AUTOSTART_WATCHER: process.env.TOKEN_MONITOR_NO_AUTOSTART !== '1',

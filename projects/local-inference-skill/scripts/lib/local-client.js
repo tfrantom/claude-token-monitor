@@ -84,7 +84,17 @@ async function isUp() {
   }
 }
 
-// Skipping this leaks a resident model -- see CLAUDE.md "The ownership record path"
+/**
+ * Writes the ownership record for a server this process started.
+ *
+ * Skipping this leaks a resident model -- see CLAUDE.md "The ownership record
+ * path". This is a vendored copy of the record format, not a require across the
+ * repo boundary, so anything that spawns a server can still be cleaned up by a
+ * reaper that knows nothing about this skill.
+ *
+ * @param {number|null} pid No record is written for a falsy pid, since a record
+ *   naming nothing cannot be verified before a kill.
+ */
 function recordSpawn(pid) {
   if (!pid) return;
   try {
@@ -100,6 +110,13 @@ function recordSpawn(pid) {
           model_path: LLAMA_MODEL_PATH,
           started_at: new Date().toISOString(),
           started_by: 'local-inference-skill',
+          // Stated rather than left to managed.js's default-on-missing. This
+          // is the shared chat instance, which is supervised by design and
+          // dies with the watcher -- not `idle`, which would reap a server
+          // that exists to stay warm.
+          last_used_at: new Date().toISOString(),
+          reap_policy: 'supervised',
+          idle_ttl_ms: 0,
         },
         null,
         2
@@ -152,6 +169,15 @@ function truncate(text, max) {
   return `${text.slice(0, head)}\n...[truncated]...\n${text.slice(-tail)}`;
 }
 
+/**
+ * @param {string} systemPrompt
+ * @param {string} userContent Always framed as data by the caller; this does no
+ *   escaping of its own.
+ * @param {{maxTokens?: number, temperature?: number, timeoutMs?: number}} [options]
+ * @returns {Promise<string|null>} null on an unreachable server, a non-2xx, a
+ *   timeout, or an empty completion. Never throws — callers fall back rather
+ *   than fail.
+ */
 async function chatText(systemPrompt, userContent, { maxTokens = 200, temperature = 0.2, timeoutMs = 20000 } = {}) {
   try {
     const res = await fetch(`${BASE_URL}/v1/chat/completions`, {
@@ -177,6 +203,16 @@ async function chatText(systemPrompt, userContent, { maxTokens = 200, temperatur
   }
 }
 
+/**
+ * @param {string} systemPrompt
+ * @param {string} userContent
+ * @param {object} schema A JSON Schema, sent with `strict: true` so the server
+ *   constrains generation rather than the caller validating afterwards.
+ * @param {string} schemaName
+ * @param {{maxTokens?: number, temperature?: number, timeoutMs?: number}} [options]
+ * @returns {Promise<object|null>} The parsed object, or null on any failure —
+ *   including a reply that is not the schema. Never throws.
+ */
 async function chatJSON(systemPrompt, userContent, schema, schemaName, { maxTokens = 300, temperature = 0.1, timeoutMs = 20000 } = {}) {
   try {
     const res = await fetch(`${BASE_URL}/v1/chat/completions`, {
@@ -204,7 +240,13 @@ async function chatJSON(systemPrompt, userContent, schema, schemaName, { maxToke
   }
 }
 
-// --in, never argv text, and stdin only from a POSIX shell -- see ../CLAUDE.md
+/**
+ * --in, never argv text, and stdin only from a POSIX shell -- see ../CLAUDE.md
+ *
+ * @param {string[]} argv
+ * @returns {object} The parsed payload.
+ * @throws {Error} If `--in` is given without a path, or the input is not JSON.
+ */
 function readInputJSON(argv) {
   const i = argv.indexOf('--in');
   const file = i !== -1 ? argv[i + 1] : null;

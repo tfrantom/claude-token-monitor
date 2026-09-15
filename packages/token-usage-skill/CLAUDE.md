@@ -39,6 +39,18 @@ Reading `status.json` **by path, with no code dependency on
 extractable on its own. `token-monitor.nvim` consumes the file the same way.
 Keep it that way.
 
+## A stale status.json is refused, and the threshold is duplicated on purpose
+
+`lookup.js` reports the watcher state rather than the file's contents when
+`updated_at` is older than `STATUS_MAX_AGE_MS`. Without that it will happily
+print a frozen snapshot — sessions that ended days and several reboots ago —
+under a "Watcher is running" heading, which is worse than reporting nothing.
+
+That constant is a **copy** of `token-monitor-core/config.js`'s, because this
+file may not `require()` into the suite (see above). Change one and change the
+other. `--json` deliberately dumps the raw file regardless of age: it is
+documented as the raw passthrough, and its caller can read `updated_at`.
+
 ## The numbers come from status.json, not from here
 
 `lookup.js` renders whatever the watcher wrote, so what the skill reports

@@ -10,6 +10,12 @@ function baseUrlFor(port = cfg.LLAMA_PORT, host = cfg.LLAMA_HOST) {
   return `http://${host}:${port}`;
 }
 
+/**
+ * @param {number} [port]
+ * @param {string} [host]
+ * @returns {Promise<boolean>} Whether `/health` answers — a liveness probe of
+ *   the socket, not of any record. Never throws.
+ */
 async function isUp(port = cfg.LLAMA_PORT, host = cfg.LLAMA_HOST) {
   try {
     const res = await fetch(`${baseUrlFor(port, host)}/health`, { signal: AbortSignal.timeout(1000) });
@@ -19,8 +25,27 @@ async function isUp(port = cfg.LLAMA_PORT, host = cfg.LLAMA_HOST) {
   }
 }
 
-// `owned` is a per-process contract and is not enough for the shared instance
-// -- see CLAUDE.md "For the shared instance, use managed.js".
+/**
+ * Starts a llama-server on the given port unless one already answers there.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.host]
+ * @param {number} [opts.port]
+ * @param {string} [opts.modelPath]
+ * @param {string} [opts.exePath]
+ * @param {string} [opts.alias]
+ * @param {number} [opts.contextSize]
+ * @param {number} [opts.gpuLayers]
+ * @param {string[]} [opts.extraArgs]
+ * @param {boolean} [opts.detached] Required for anything meant to outlive the
+ *   caller, which is nearly everything here.
+ * @param {number} [opts.timeoutMs]
+ * @returns {Promise<{owned: boolean, proc: object|null, baseUrl: string}>}
+ *   `owned` is a **per-process** contract: true only if *this* call spawned it.
+ *   It cannot express "live as long as someone needs it", which is why anything
+ *   shared goes through managed.js and its on-disk records instead -- see
+ *   CLAUDE.md "For the shared instance, use managed.js".
+ */
 async function ensureRunning(opts = {}) {
   const {
     host = cfg.LLAMA_HOST,
@@ -77,8 +102,16 @@ async function ensureRunning(opts = {}) {
   throw new Error(`llama-server on port ${port} did not become healthy within ${timeoutMs}ms`);
 }
 
-// Preferred over ensureRunning for anything but the shared chat instance: the
-// port comes from the registry and is checked before spawning.
+/**
+ * Preferred over ensureRunning for anything but the shared chat instance: the
+ * port comes from the registry and is checked before spawning.
+ *
+ * @param {string} name A registered claim.
+ * @param {object} [opts] As ensureRunning, minus `port`.
+ * @returns {Promise<{owned: boolean, proc: object|null, baseUrl: string}>}
+ * @throws {Error} If `opts.port` disagrees with the registry, or the port is
+ *   occupied by something that is not a reusable instance of the same model.
+ */
 async function ensureRunningFor(name, opts = {}) {
   const claim = ports.get(name);
 

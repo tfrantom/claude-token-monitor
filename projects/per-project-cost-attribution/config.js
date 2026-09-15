@@ -9,8 +9,13 @@ const HOME = os.homedir();
 module.exports = {
   PROJECTS_DIR: path.join(HOME, '.claude', 'projects'),
 
+  // TOKEN_MONITOR_STATE_DIR is mirrored, not require()d: reconstructing the
+  // default while ignoring the override reads a stale file at the old path,
+  // and with ASSUME_ENDED_WHEN_ABSENT that marks every session ended.
   STATUS_FILE: path.join(
-    __dirname, '..', '..', 'packages', 'token-monitor-core', 'state', 'status.json'
+    process.env.TOKEN_MONITOR_STATE_DIR ||
+      path.join(__dirname, '..', '..', 'packages', 'token-monitor-core', 'state'),
+    'status.json'
   ),
 
   WORKSPACE_ROOTS: [

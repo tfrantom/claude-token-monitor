@@ -15,6 +15,10 @@ function trace(fields) {
   } catch {}
 }
 
+/**
+ * @returns {string} Claude Code's session JSON, or '' when nothing was piped —
+ *   which is the normal case when run by hand.
+ */
 function readStdin() {
   try {
     return fs.readFileSync(0, 'utf8');
@@ -23,6 +27,10 @@ function readStdin() {
   }
 }
 
+/**
+ * @param {number} n
+ * @returns {string} e.g. `938`, `12.4k`, `1.2M`.
+ */
 function fmtK(n) {
   const scale = (v, suffix) => `${v >= 10 ? Math.round(v) : Number(v.toFixed(1))}${suffix}`;
   if (n >= 1e6) return scale(n / 1e6, 'M');
@@ -56,6 +64,12 @@ const ACTIVITY = {
   ended: { glyph: '·', color: DIM },
 };
 
+/**
+ * @param {{state?: string}|null|undefined} activity
+ * @returns {{glyph: string, color: string}|null} null when the session
+ *   published no activity at all. An *unknown* state is not null — it gets the
+ *   neutral marker, so a newer watcher's vocabulary still renders here.
+ */
 function activityMark(activity) {
   if (!activity || !activity.state) return null;
   return ACTIVITY[activity.state] || { glyph: '•', color: DIM };
@@ -69,16 +83,20 @@ function totalTokens(t) {
   return t.context + t.cache_write + t.cache_read + t.thinking + t.writing + t.tool_calls;
 }
 
+/**
+ * @param {object} s One `status.json` session entry.
+ * @param {boolean} isActive Whether this is the bar's own session, which gets
+ *   the agent breakdown and the activity detail; every other session is
+ *   rendered compactly.
+ * @returns {string} SGR-coloured, single line.
+ */
 function renderSession(s, isActive) {
   const t = s.totals;
   const agents = s.agents || [];
   const mark = activityMark(s.activity);
 
-  // One glyph, one meaning, in both positions: the same session must not
-  // render differently depending on whose bar it appears in. `●` used to be
-  // the active-session marker AND the no-activity fallback, so a session
-  // showed `●` in its own bar and nothing in everyone else's. The active
-  // session is already identified by bold cyan and by being first.
+  // One glyph, one meaning, in both positions -- see CLAUDE.md "What the
+  // status line renders".
   const dot = mark ? `${mark.color}${mark.glyph}${RESET} ` : '';
 
   if (isActive) {
@@ -95,12 +113,16 @@ function renderSession(s, isActive) {
   return `${dot}${DIM}${s.name}${RESET}${badge}${DIM} ${fmtCostShort(t.cost_usd)}${RESET}`;
 }
 
+/**
+ * @param {import('./lib/supervisor').WatcherState} [watcherState]
+ * @returns {string} What to show when there is no snapshot to render.
+ */
 function watcherMessage(watcherState) {
   switch (watcherState) {
     case 'starting':
       return 'token-monitor: starting watcher…';
-    case 'cooldown':
-      return 'token-monitor: waiting for watcher…';
+    case 'running':
+      return 'token-monitor: waiting for the first snapshot…';
     case 'failed':
       return 'token-monitor: watcher failed to start (run `node watcher.js` to see why)';
     case 'disabled':
@@ -110,8 +132,30 @@ function watcherMessage(watcherState) {
   }
 }
 
-// `statusOverride` is test-only -- see CLAUDE.md "Do not touch the live
-// status.json in a test".
+/**
+ * @param {object} status A parsed `status.json`.
+ * @param {number} [now]
+ * @returns {boolean} False for a snapshot no live watcher can have written,
+ *   including one with no `updated_at` at all. Every session in a stale
+ *   snapshot is unfalsifiable, not live — see CLAUDE.md "A snapshot is only as
+ *   live as the watcher that wrote it".
+ */
+function isSnapshotFresh(status, now = Date.now()) {
+  const at = Date.parse((status && status.updated_at) || '');
+  return Number.isFinite(at) && now - at <= cfg.STATUS_MAX_AGE_MS;
+}
+
+/**
+ * @param {{session_id?: string, sessionId?: string}} input Claude Code's piped
+ *   session JSON. Its id decides which session sorts first and renders active.
+ * @param {object} [statusOverride] Test-only -- see CLAUDE.md "Do not touch the
+ *   live status.json in a test". Pass `undefined` to read the real file;
+ *   passing an explicit object bypasses reading it, not the freshness gate.
+ * @param {import('./lib/supervisor').WatcherState} [watcherState] Rendered
+ *   instead of sessions when `status.json` cannot be read or is stale.
+ * @returns {string} One line. Ended sessions are filtered here, not by the
+ *   watcher, which keeps them for other consumers.
+ */
 function renderLine(input, statusOverride, watcherState) {
   const activeId = input.session_id || input.sessionId || null;
 
@@ -124,6 +168,10 @@ function renderLine(input, statusOverride, watcherState) {
     } catch {
       return `${DIM}${watcherMessage(watcherState)}${RESET}`;
     }
+  }
+
+  if (!isSnapshotFresh(status)) {
+    return `${DIM}${watcherMessage(watcherState)}${RESET}`;
   }
 
   // Ended sessions stay in status.json for other consumers, so filtering them
@@ -174,4 +222,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { renderLine, renderSession, fmtK, fmtCostShort, watcherMessage, activityMark, ACTIVITY };
+module.exports = { renderLine, renderSession, fmtK, fmtCostShort, watcherMessage, activityMark, isSnapshotFresh, ACTIVITY };

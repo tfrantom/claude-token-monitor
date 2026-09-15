@@ -94,6 +94,58 @@ file's presence: a hard kill leaves a stale `<pid>.json` behind, and a
 transcript's mtime freezes at the last message whether the session ended or
 merely went idle.
 
+### A registry entry outlives the session that wrote it
+
+Claude Code never removes `~/.claude/sessions/<pid>.json` on a hard kill or a
+reboot, so the entry is only ever evidence about a pid, not about a session.
+A signal-0 probe alone therefore resurrects a long-dead session the moment the
+OS hands its pid to something else — and after a reboot the whole pid space is
+reissued, so this is not a rare collision. It happened: a session that ended
+2026-08-28 was still being reported live on 2026-09-08, three reboots later.
+
+`isRegistryEntryLive()` rejects any entry whose `startedAt` predates the
+machine's boot instant (`os.uptime()`, with `BOOT_CLOCK_SLACK_MS` of slack —
+measured 4s of drift over 4 days on this machine) before it probes the pid.
+That is what makes the check survive a reboot.
+
+Two deliberate limits. **An entry with no `startedAt` falls back to the bare
+pid probe**, so an older Claude Code build degrades to the previous behaviour
+rather than reading as universally dead — never invert that default, because
+"reject when unsure" here marks every session ended at once and trips the idle
+shutdown. And **same-boot pid recycling is not covered**: `procStart` in the
+entry would settle it exactly, but reading a pid's real creation time needs
+process enumeration, which is far too expensive for a 5s loop.
+
+Do not "clean up" the stale files in `~/.claude/sessions/`. That directory is
+Claude Code's, not this suite's.
+
+## A snapshot is only as live as the watcher that wrote it
+
+`status.json` carries no evidence of its own freshness beyond `updated_at`, and
+every number in it is frozen the instant the watcher stops. A consumer that
+renders it unconditionally therefore reports whatever the last tick happened to
+see — forever, across reboots, as though it were live. That is exactly what
+happened: with autostart disabled, a bar rendered a ten-day-old session, marked
+`working`, in a session that had never met it.
+
+**Every consumer gates on `updated_at` against `STATUS_MAX_AGE_MS` before
+rendering anything, and treats a missing or unparseable `updated_at` as stale.**
+`statusline.js` has `isSnapshotFresh()`; `token-usage-skill`'s `lookup.js`
+duplicates the constant because it may not `require()` into the suite;
+`token-monitor.nvim` got there first with its own `stale_after_ms`. A stale
+snapshot renders the `ensureWatcher()` state instead — "watcher not running" is
+information, a frozen number is a lie.
+
+The threshold must stay well clear of the worst-case tick, which is not the 8ms
+of parsing: `SEMANTIC_TIME_BUDGET_MS` is 8s on its own and naming makes a model
+call per live session. Sixty seconds is roughly 12 poll intervals. Tightening it
+toward `POLL_INTERVAL_MS` makes the bar flicker to "watcher not running"
+whenever the local model is slow.
+
+This is a *display* rule and does not belong in the watcher — same split as
+`ended`: the data layer keeps what it observed, each presentation layer decides
+what it is willing to show.
+
 ## Ended sessions stay in the data and are hidden by the presentation
 
 The watcher does *not* drop `ended` sessions early — they stay in
@@ -303,7 +355,14 @@ sentinel (`SEMANTIC_RETRY_MS`) rather than an immediate retry — otherwise a do
 
 Only the active session gets the per-agent breakdown; otherwise N terminal tabs
 each render N agent lists and the line is unusable. Other sessions collapse to a
-count badge (`3A` == three running agents). Every `ensureWatcher()` state must
+count badge (`3A` == three running agents).
+
+**One glyph, one meaning, in both positions.** A session must not render
+differently depending on whose bar it appears in. `●` was once both the
+active-session marker *and* the no-activity fallback, so the same session showed
+`●` in its own bar and nothing in everyone else's. The active session is already
+identified by bold cyan and by being first, so the activity glyph is free to
+mean only activity. Every `ensureWatcher()` state must
 render as a distinguishable message — a user has to be able to tell "coming up
 in a second" from "broken, go look" — and `test.js` asserts that none of them
 collapse into each other.
@@ -383,10 +442,28 @@ would silently price Opus 5 off the 4.x row.
 
 ## Transcript parsing, and the two things that look like bugs
 
-**Usage is per `message.id`, not per line.** One API turn is several JSONL
-lines (one per content block) and every one of them repeats the turn's full
-`usage`. Counting per line trebles everything. `finalizeTurn` closes a turn
-when the message id changes.
+**Usage is per `message.id`, and a turn is accumulated by id — never by
+adjacency.** One API turn is several JSONL lines (one per content block), and
+the lines of a turn are **not contiguous**: on parallel tool calls Claude Code
+writes the first `tool_result` *between* two `tool_use` lines that share one
+id. `classifySession` therefore keys turns in a `Map` and finalizes them all
+after the scan. Closing a turn on the first non-assistant entry — which it used
+to do — reopened the same id as a second turn and counted its `usage` again.
+Measured over 61 real transcripts: context **−25.7%**, cache_write **−18.2%**,
+cache_read **−8.6%** once fixed.
+
+**Take the last `usage` on an id, not the first.** `output_tokens` is written
+*in progress*: the first line of a turn carries a partial count and the last
+carries the final one (measured: 1023 of 2318 multi-line turns vary, e.g.
+`out=1` on the opening line and `out=168` on the closing one; `input_tokens`
+and `cache_read_input_tokens` stay constant). Capturing usage when the turn
+opens took the partial figure and under-reported output by roughly half —
+thinking **+64.3%** and writing **+49.7%** once fixed.
+
+Those two pull cost in opposite directions and the input side dominates,
+because cache reads are ~900M tokens against ~1.2M thinking tokens. Net effect
+of fixing both: **$595.03 → $560.93, −5.7%**. Anything holding a cached total
+from before 2026-08-27 sees a step change and it is the fix, not a regression.
 
 **Output tokens are prorated by inter-block wall-clock delta, not character
 length.** This looks wrong until you know that Claude Code's default
@@ -480,6 +557,24 @@ sent to the agent*, and merging them lets a background task rename the session.
   observed `<task-notification>` ran 5111 chars against a 184-char actual
   message. `lib/transcript.js` filters them out of `userTexts` by prefix, and
   strips injected blocks appended to otherwise-real messages.
+
+  **Prefer a strip to a prefix: these preambles are tag-wrapped and the wrapper
+  moves.** Claude Code now emits the slash-command caveat as
+  `<local-command-caveat>Caveat: The messages below were generated…`, so the bare
+  `Caveat:` prefix entry stopped matching and the `/login` preamble reached the
+  namer as if a human had typed it — a session rendered as "LOCAL COMMAND
+  GENERATION WARNING SYSTEM". A prefix check fails the moment anything is
+  prepended; a strip does not, and it also rescues real prose sharing the turn.
+
+  `INJECTED_BLOCK_TAGS` therefore covers `system-reminder`, `task-notification`,
+  `local-command-caveat`, `command-name`, `command-message`, `command-args` and
+  `local-command-stdout`. **`NON_USER_PREFIXES` is kept as the backstop, not as
+  dead weight**: an unclosed tag (a truncated transcript) matches no strip regex,
+  and the prefix still catches it. Measured over the 9 parent transcripts on this
+  machine: 0 untagged `Caveat:` entries, and `<command-message>`/`<command-args>`
+  never appear without `<command-name>` in the same entry, so the one prefix
+  covers the whole preamble. Add a new wrapper to the tag list, not to the
+  prefix list.
 - **Truncate per message, from the front — never tail-slice the joined
   string.** One long message could otherwise push every other message,
   including the newest, entirely out of the prompt.
@@ -497,6 +592,14 @@ sent to the agent*, and merging them lets a background task rename the session.
   only)`, and the system prompt names that heading. 6/6 correct after. Do not
   "tidy" the window back into chronological order — ordering is the fix and the
   labels are what let the prompt point at it.
+
+**`TOPIC_STOPWORDS` is a safety list, not a tidiness list.** `sameTopic`
+suppresses a rename on a *single* shared significant word, so any scaffolding
+word missing from that set can freeze a name forever: a session that had moved
+to an entirely different project kept "Neovim Token Monitor Error Explanation"
+because every replacement the model proposed also contained "explanation". When
+a name will not budge, look here first — and only add words that describe the
+*shape* of an interaction rather than its subject.
 
 The model is nonetheless sent a rolling window of the last few messages, not
 just the unseen ones: every check advances `named_at_turn_count`, so an

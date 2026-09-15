@@ -34,15 +34,6 @@ local function total_tokens(t)
   return (t.context or 0) + (t.cache_write or 0) + (t.cache_read or 0) + (t.thinking or 0) + (t.writing or 0) + (t.tool_calls or 0)
 end
 
-local function fmt_thinking(thinking, sem)
-  local classified = sem and ((sem.thinking_productive or 0) + (sem.thinking_wasted or 0)) or 0
-  if classified < 1 then
-    return "thk " .. M.fmt_num(thinking)
-  end
-  local pct = math.floor((sem.thinking_productive / classified) * 100 + 0.5)
-  return string.format("thk %s (%d%%p)", M.fmt_num(thinking), pct)
-end
-
 local function agent_pairs(agents)
   if not agents or #agents == 0 then
     return nil

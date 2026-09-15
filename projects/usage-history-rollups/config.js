@@ -2,7 +2,11 @@
 
 const path = require('path');
 
-const CORE_STATE_DIR = path.join(__dirname, '..', '..', 'packages', 'token-monitor-core', 'state');
+// TOKEN_MONITOR_STATE_DIR is mirrored, not require()d -- the arms-length rule
+// stands, but reconstructing the default while ignoring the override left this
+// reading a stale file at the old path while the watcher wrote to the new one.
+const CORE_STATE_DIR =
+  process.env.TOKEN_MONITOR_STATE_DIR || path.join(__dirname, '..', '..', 'packages', 'token-monitor-core', 'state');
 
 const STATE_DIR = process.env.ROLLUP_STATE_DIR || path.join(__dirname, 'state');
 

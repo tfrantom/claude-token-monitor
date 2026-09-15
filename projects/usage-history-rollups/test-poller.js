@@ -174,7 +174,10 @@ check(clamped[1].delta.cost_usd === 0, 'a shrinking total clamps to a zero delta
 section('compact.js rolls up old detail without changing any total');
 const { compact } = require('./compact');
 const day = 24 * 60 * 60 * 1000;
-const old = Date.now() - 30 * day;
+// Floored to a UTC midnight, so the +1h/+2h snapshots below stay on the same
+// UTC day as `old`. Deriving it straight from Date.now() made this fail for
+// the two hours before midnight UTC and pass the rest of the day.
+const old = Math.floor((Date.now() - 30 * day) / day) * day;
 const mk = (sid, offsetMs, cost, reason = 'periodic') => ({ ts: new Date(offsetMs).toISOString(), session_id: sid, reason, name: sid, totals: { cost_usd: cost, thinking: cost * 10 } });
 const raw = [
   mk('P', old, 1),

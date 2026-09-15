@@ -43,6 +43,31 @@ function isPidAlive(pid) {
   }
 }
 
+/**
+ * The on-disk claim that this suite started a server, and how it may be
+ * stopped. Ownership lives here rather than in a variable because the process
+ * that starts a server is usually short-lived and cannot outlive it -- see
+ * CLAUDE.md "Ownership is on disk, not in a variable".
+ *
+ * @typedef {object} OwnershipRecord
+ * @property {string} claim Port-claim name; also the record's filename.
+ * @property {number|null} pid
+ * @property {number} port
+ * @property {string} host
+ * @property {string|null} model_path
+ * @property {string} started_at ISO 8601.
+ * @property {string} started_by Free text, for a human deciding whether to kill it.
+ * @property {string} last_used_at ISO 8601; moved forward by `touch`.
+ * @property {'supervised'|'idle'} reap_policy `supervised` is never idle-reaped
+ *   and dies with its owner; `idle` is reaped after `idle_ttl_ms` untouched.
+ * @property {number} idle_ttl_ms 0 for `supervised`.
+ */
+
+/**
+ * @param {string} [name]
+ * @returns {OwnershipRecord|null} null means **no record**, which is the signal
+ *   never to kill anything: a server this suite did not start is left alone.
+ */
 function readRecord(name = SHARED_CLAIM) {
   try {
     const rec = JSON.parse(fs.readFileSync(recordFile(name), 'utf8'));
@@ -83,6 +108,12 @@ function listRecords() {
   return out;
 }
 
+/**
+ * Moves `last_used_at` forward, deferring an idle reap.
+ *
+ * @param {string} [name]
+ * @returns {boolean} False when there is no record to touch.
+ */
 function touch(name = SHARED_CLAIM) {
   const rec = readRecord(name);
   if (!rec) return false;
@@ -128,6 +159,13 @@ function parseNetstatListener(stdout, port) {
 
 // Windows-only. null means "cannot tell", never "nothing is there"; callers
 // fall back to the weaker check.
+/**
+ * @param {number} port
+ * @param {{timeoutMs?: number}} [options]
+ * @returns {Promise<number|null>} The pid of the LISTENING socket's owner, or
+ *   null for "cannot tell" — never treat null as "nobody", since callers use
+ *   this to avoid killing a bystander that inherited a recycled pid.
+ */
 function pidOnPort(port, { timeoutMs = 4000 } = {}) {
   return new Promise((resolve) => {
     if (process.platform !== 'win32') return resolve(null);
@@ -139,7 +177,36 @@ function pidOnPort(port, { timeoutMs = 4000 } = {}) {
 }
 
 // -> { claim, baseUrl, port, pid, started, managed }
-// `managed` true means a record exists and a reaper may stop it later.
+/**
+ * @typedef {object} EnsureResult
+ * @property {string} claim
+ * @property {string} baseUrl
+ * @property {number} port
+ * @property {number|null} pid
+ * @property {boolean} started False when an instance was already answering,
+ *   including one this suite did not start.
+ * @property {boolean} managed A record exists, so a reaper may stop it later.
+ *   False means it is someone else's and will be left alone forever.
+ */
+
+/**
+ * Starts the named server if nothing is answering on its port, and records
+ * ownership if it does start one.
+ *
+ * Concurrent callers are serialised by a spawn lock: two sessions opening at
+ * once both see an empty port, and without it both spawn a resident copy of the
+ * model. The loser waits rather than failing to bind.
+ *
+ * @param {string} name A registered port claim.
+ * @param {object} [options]
+ * @param {string} [options.startedBy] Recorded verbatim, for whoever later has
+ *   to decide whether killing it is safe.
+ * @param {number} [options.waitMs] How long to wait for another spawner.
+ * @param {'supervised'|'idle'} [options.policy] Defaults to `supervised` for
+ *   the shared claim and `idle` for everything else.
+ * @param {number} [options.idleTtlMs] Ignored under `supervised`.
+ * @returns {Promise<EnsureResult>}
+ */
 async function ensureManaged(name, { startedBy = 'unknown', waitMs = 30_000, policy, idleTtlMs, ...opts } = {}) {
   const claim = ports.get(name);
   const port = claim.port;
@@ -218,8 +285,18 @@ function forceKill(pid) {
   });
 }
 
-// Stops an instance IF this suite recorded starting it. Never throws: it is
-// called from shutdown paths.
+/**
+ * Stops an instance IF this suite recorded starting it. Never throws: it is
+ * called from shutdown paths.
+ *
+ * @param {string} name
+ * @param {{reason?: string}} [options]
+ * @returns {Promise<{claim: string, stopped: boolean, pid: number|null, reason: string}>}
+ *   `stopped: false` is a normal outcome, not a failure — no record, an
+ *   already-dead pid, or a port held by someone else all land here, and
+ *   `reason` says which. Nothing is killed without confirming the recorded pid
+ *   still holds the port.
+ */
 async function stopManaged(name, { reason = 'requested' } = {}) {
   const rec = readRecord(name);
   if (!rec) {
@@ -287,6 +364,14 @@ async function stopAll({ reason = 'shutdown', include = () => true } = {}) {
   return results;
 }
 
+/**
+ * @param {OwnershipRecord} rec
+ * @param {number} [now]
+ * @returns {{reap: boolean, idleFor: number|null, why: string}} `why` is
+ *   reported to the operator, so it explains a refusal as well as a decision.
+ *   Idle is measured from `last_used_at` falling back to `started_at`, never
+ *   from now — a client that forgets to touch must not be immortal.
+ */
 function isReapable(rec, now = Date.now()) {
   if (rec.reap_policy !== 'idle' || !rec.idle_ttl_ms) {
     return { reap: false, idleFor: null, why: 'supervised -- lifetime tied to the watcher, never idle-reaped' };
@@ -301,6 +386,13 @@ function isReapable(rec, now = Date.now()) {
   return { reap: true, idleFor, why: `idle ${Math.round(idleFor / 1000)}s (ttl ${Math.round(rec.idle_ttl_ms / 1000)}s)` };
 }
 
+/**
+ * Stops every `idle` instance past its TTL, and clears records whose process is
+ * already gone.
+ *
+ * @param {{now?: number, reason?: string}} [options]
+ * @returns {Promise<Array<object>>} What was acted on; empty is the common case.
+ */
 async function reap({ now = Date.now(), reason = 'idle' } = {}) {
   const acted = [];
   for (const rec of listRecords()) {
@@ -336,6 +428,12 @@ function sharedStatus() {
   return status(SHARED_CLAIM);
 }
 
+/**
+ * @param {{now?: number}} [options]
+ * @returns {Array<{claim: string, pid: number|null, port: number, alive: boolean, policy: string, idle_ms: number|null, idle_ttl_ms: number, started_by: string, record: OwnershipRecord}>}
+ *   One row per record, not per listening port: a server nobody recorded does
+ *   not appear here, which is what keeps it safe from every automatic path.
+ */
 function statusAll({ now = Date.now() } = {}) {
   return listRecords().map((rec) => {
     const last = Date.parse(rec.last_used_at || rec.started_at || 0) || 0;

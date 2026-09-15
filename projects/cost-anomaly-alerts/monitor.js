@@ -20,7 +20,12 @@ function writeJsonAtomic(file, data) {
   fs.renameSync(tmp, file);
 }
 
-// `thresholds` must be ascending.
+/**
+ * @param {number} cost
+ * @param {number[]} thresholds Must be ascending.
+ * @returns {number|null} The highest threshold reached, or null below them all.
+ *   The tier, not a boolean, is what makes re-notification idempotent.
+ */
 function crossedTier(cost, thresholds) {
   let tier = null;
   for (const t of thresholds) {
@@ -47,13 +52,29 @@ function safeName(name) {
   return cleaned || '(unnamed session)';
 }
 
-// see CLAUDE.md "The dedup / re-notify gate"
+/**
+ * see CLAUDE.md "The dedup / re-notify gate"
+ *
+ * @param {number} tier
+ * @param {{tier: number}|undefined} notifiedEntry
+ * @returns {boolean} True only for a *higher* tier than already announced, so a
+ *   session crossing one threshold notifies once and still notifies again at
+ *   the next.
+ */
 function shouldNotify(tier, notifiedEntry) {
   const prevTier = notifiedEntry ? notifiedEntry.tier : 0;
   return tier > prevTier;
 }
 
-// `notified` entries are never pruned -- see CLAUDE.md "The dedup / re-notify gate"
+/**
+ * One pass over `status.json`, notifying any session that has crossed a new
+ * tier.
+ *
+ * @param {Record<string, {tier: number}>} notified Mutated in place. Entries
+ *   are never pruned -- see CLAUDE.md "The dedup / re-notify gate".
+ * @param {{notify?: Function}} [deps] Injectable for tests, so a check never
+ *   fires a real desktop notification.
+ */
 function tick(notified, deps = {}) {
   const notify = deps.notify || fireNotification;
   const status = loadJson(cfg.STATUS_FILE, null);

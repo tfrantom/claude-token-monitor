@@ -24,6 +24,7 @@ classification.
 | [`ask-question-prefilter`](projects/ask-question-prefilter/) | Local-model gate in front of `bug-me-claude`'s `ask-question.ps1` |
 | [`usage-history-rollups`](projects/usage-history-rollups/) | Persists per-session history, which `status.json` alone cannot answer |
 | [`per-project-cost-attribution`](projects/per-project-cost-attribution/) | Attributes cost by real repo/cwd |
+| [`comment-auditor`](projects/comment-auditor/) | Reports comments the repo's conventions say should not exist |
 
 ## Requirements
 
@@ -51,7 +52,7 @@ which starts the shared `llama-server`; closing the last session stops both.
 ```sh
 node packages/token-monitor-core/watcher.js       # run it yourself, to see its logs
 node packages/llama-local-server/managed.js       # what is running, and who owns it
-node run-checks.js                                # 6 passed, 2 skipped
+node run-checks.js                                # 8 passed, 2 skipped
 ```
 
 | Escape hatch | Effect |

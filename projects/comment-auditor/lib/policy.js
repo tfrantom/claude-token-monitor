@@ -88,7 +88,25 @@ function isProtected(text) {
   return null;
 }
 
-// -> a settled finding, or null when only the model can tell.
+/**
+ * @typedef {'restates-code'|'history'|'commented-out-code'|'banner'|'measured-finding'|'trap'|'pointer'|'doc'|'unclear'|'protected'} CommentLabel
+ */
+
+/**
+ * @typedef {object} Finding
+ * @property {CommentLabel} label
+ * @property {number} confidence 0..1; a rule is always 1.
+ * @property {'rule'|'model'} by Only `rule` can ever reach a deletion.
+ * @property {string} [rule] Which rule matched, for the report.
+ */
+
+/**
+ * @param {{text: string}} comment
+ * @returns {Finding|null} null when only the model can tell — the caller then
+ *   asks it. Keep rules are checked before removal rules, because a pointer
+ *   that also describes the code is still a pointer and wrongly keeping a
+ *   comment is the cheap mistake.
+ */
 function triage(comment) {
   const body = comment.text.replace(/^[\s*]+/gm, '').trim();
 
@@ -139,9 +157,19 @@ const ADVICE = {
   protected: 'Load-bearing to a tool, a license, or its author. Never touched.',
 };
 
-// A model label can never become a deletion -- see CLAUDE.md "Measured: the
-// model cannot recognise a pointer or a trap". It surfaces candidates; only a
-// rule removes anything.
+/**
+ * A model label can never become a deletion -- see CLAUDE.md "Measured: the
+ * model cannot recognise a pointer or a trap". It surfaces candidates; only a
+ * rule removes anything.
+ *
+ * @param {CommentLabel} label
+ * @param {number} confidence
+ * @param {number} minConfidence
+ * @param {'rule'|'model'} [by]
+ * @returns {'remove'|'relocate'|'keep'|'review'} `review` is where anything
+ *   uncertain lands, and where every model-sourced removal candidate lands
+ *   regardless of confidence.
+ */
 function verdictFor(label, confidence, minConfidence, by = 'rule') {
   const base = VERDICTS[label] || 'keep';
   if (base !== 'remove') return base;

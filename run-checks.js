@@ -19,6 +19,23 @@ function lastLine(text) {
   return lines.length ? lines[lines.length - 1].trim() : '';
 }
 
+/**
+ * @typedef {object} Check
+ * @property {string} name Also the `--only` filter value.
+ * @property {string} script Repo-relative.
+ * @property {string} runner
+ * @property {number} timeoutMs
+ * @property {'safe'|'unsafe'} safety `unsafe` is skipped unless
+ *   `--include-unsafe`: those take over a shared port, load a model onto the
+ *   GPU, or drive a blocking desktop prompt, and would disturb any other
+ *   session on this machine.
+ * @property {string} what Shown by `--list`.
+ * @property {string} why Why it is safe, or why it is not — the field that has
+ *   to be re-justified when a check changes.
+ * @property {string[]} [args]
+ */
+
+/** @type {Check[]} */
 const CHECKS = [
   {
     name: 'token-monitor-core',
@@ -192,6 +209,13 @@ function buildCommand(check) {
   }
 }
 
+/**
+ * @param {Check} check
+ * @param {object} opts
+ * @returns {Promise<{name: string, status: 'pass'|'fail'|'timeout'|'error'|'skip', ms: number, note?: string}>}
+ *   Resolves for every outcome, including a failure — the runner reports all
+ *   checks rather than stopping at the first bad one.
+ */
 function runCheck(check, opts) {
   // Checks use relative require()s and relative state paths; run each from its own dir.
   const cwd = path.join(ROOT, path.dirname(check.script));
@@ -275,6 +299,10 @@ function walk(dir, out = []) {
   return out;
 }
 
+/**
+ * @returns {string[]} Test files on disk that no check registers, so a suite
+ *   that silently stops being run is reported rather than assumed green.
+ */
 function auditUnregistered() {
   const registered = new Set(CHECKS.map((c) => c.script.replace(/\\/g, '/').toLowerCase()));
   registered.add('run-checks.js');

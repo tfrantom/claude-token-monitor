@@ -18,6 +18,10 @@ const DISABLE_FILE = path.join(cfg.STATE_DIR, 'autostart.disabled');
 
 const MAX_CONSECUTIVE_FAILURES = 3;
 
+/**
+ * @param {number|null|undefined} pid
+ * @returns {boolean} Signal 0 probes without delivering anything.
+ */
 function isPidAlive(pid) {
   if (!pid) return false;
   try {
@@ -28,6 +32,10 @@ function isPidAlive(pid) {
   }
 }
 
+/**
+ * @returns {number|null} null when no watcher holds the lock, including when a
+ *   stale lock names a pid that is gone.
+ */
 function watcherPid() {
   try {
     const pid = Number(fs.readFileSync(LOCK_FILE, 'utf8').trim());
@@ -52,8 +60,13 @@ function writeStamp(stamp) {
   } catch {}
 }
 
-// A detached child can silently fail to launch on Windows, so a pid here is
-// never taken as proof: the next render checks the lock instead.
+/**
+ * A detached child can silently fail to launch on Windows, so a pid here is
+ * never taken as proof: the next render checks the lock instead.
+ *
+ * @returns {number|null} The child's pid, which means "spawn was requested",
+ *   not "a watcher is running".
+ */
 function spawnWatcher() {
   const child = spawn(process.execPath, [WATCHER_JS], {
     detached: true,
@@ -66,9 +79,20 @@ function spawnWatcher() {
   return child.pid || null;
 }
 
-// -> 'running' | 'starting' | 'cooldown' | 'failed' | 'disabled'
-// Never throws: a status line that crashes prints a stack trace ten times a
-// second.
+/**
+ * @typedef {'running'|'starting'|'failed'|'disabled'} WatcherState
+ *   `running` — a live pid holds the lock.
+ *   `starting` — a spawn was attempted and the cooldown has not elapsed.
+ *   `failed` — MAX_CONSECUTIVE_FAILURES spawns produced no lock.
+ *   `disabled` — autostart is off, by config or by the disable file.
+ */
+
+/**
+ * Starts a watcher if none holds the lock.
+ *
+ * @returns {WatcherState} Never throws: this runs on every status line render,
+ *   and a throw here is a stack trace ten times a second.
+ */
 function ensureWatcher() {
   try {
     if (watcherPid()) {

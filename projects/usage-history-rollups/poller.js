@@ -61,6 +61,16 @@ function readStatus() {
 }
 
 // Cumulative, NOT a delta -- see CLAUDE.md "Entries are cumulative, not deltas"
+/**
+ * @param {'ended'|'vanished'|'periodic'} reason `ended` is the real
+ *   end-of-session checkpoint and is written once per session lifetime;
+ *   `vanished` is the fallback for a session that left without one; `periodic`
+ *   samples a live session so a long one can be split across days.
+ * @param {string} sessionId
+ * @param {object} seen Last-known totals for the session.
+ * @returns {object} One history line. **Totals are cumulative, not deltas** —
+ *   consumers difference consecutive entries themselves.
+ */
 function snapshotEntry(reason, sessionId, seen) {
   const s = seen.session;
   return {
@@ -75,6 +85,9 @@ function snapshotEntry(reason, sessionId, seen) {
     last_activity: s.last_activity,
     totals: s.totals,
     semantic: s.semantic || null,
+    // Reserved join point for per-project-cost-attribution's cwd breakdown.
+    // The watcher does not write it yet, so this is null on every row today --
+    // see CLAUDE.md "Fitting per-project-cost-attribution".
     by_project: s.by_project || null,
   };
 }
@@ -89,6 +102,17 @@ function trackNew(session, now) {
   };
 }
 
+/**
+ * One polling pass: decides which sessions to snapshot, and appends them.
+ *
+ * @param {Record<string, object>} state Per-session tracking, mutated and
+ *   persisted so a restart does not re-finalize a session.
+ * @param {number} [nowMs] Injectable for tests.
+ * @returns {{state: object, wrote: Array<object>}} `wrote` is empty on most
+ *   passes. An unreadable `status.json` skips the whole poll rather than
+ *   treating it as an empty session set, which would roll every live session
+ *   up as `vanished`.
+ */
 function poll(state, nowMs) {
   const now = nowMs === undefined ? Date.now() : nowMs;
   const status = readStatus();
@@ -139,6 +163,14 @@ function poll(state, nowMs) {
   return { state, wrote };
 }
 
+/**
+ * Rebuilds "already finalized" from the history file, for when the tracking
+ * state is lost but the history is not — otherwise a session still lingering in
+ * the window gets a second `ended` entry.
+ *
+ * @param {Record<string, object>} state
+ * @returns {Record<string, object>} The same object, mutated.
+ */
 function seedFinalizedFromHistory(state) {
   const finalized = new Set();
   for (const e of readHistoryLines(cfg.HISTORY_FILE)) {

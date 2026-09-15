@@ -324,6 +324,28 @@ function attachCode(group, source, lineStarts, contextLines) {
   group.code = out.join('\n').trimEnd();
 }
 
+/**
+ * @typedef {object} ScannedComment
+ * @property {string} text Including its markers.
+ * @property {'line'|'block'} style
+ * @property {number} start Byte offset.
+ * @property {number} end
+ * @property {number} line 1-based.
+ * @property {number} endLine
+ * @property {string} code The lines following it, for context.
+ */
+
+/**
+ * Finds every comment, using a state machine rather than a regex -- a regex
+ * over `//` deletes the tail of any string containing one.
+ *
+ * @param {string} source
+ * @param {string} filePath Extension picks the dialect.
+ * @param {{contextLines?: number}} [options]
+ * @returns {ScannedComment[]|null} null for a language with no scanner, which
+ *   callers must not treat as "no comments found". Consecutive line comments
+ *   are merged into one run, so a paragraph is judged whole.
+ */
 function scanComments(source, filePath, { contextLines = 6 } = {}) {
   const dialect = dialectFor(filePath);
   if (!dialect) return null;

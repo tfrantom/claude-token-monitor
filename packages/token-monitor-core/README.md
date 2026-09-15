@@ -50,6 +50,7 @@ All of it is in `config.js`.
 |---|---|---|
 | `ACTIVE_SESSION_WINDOW_MS` | 30 min | How recently a transcript must have been written to count as active. |
 | `POLL_INTERVAL_MS` | 5000 | Watcher tick. |
+| `STATUS_MAX_AGE_MS` | 60 s | How old `status.json` may be before consumers report the watcher state instead of its sessions. |
 | `IDLE_SHUTDOWN_MS` | 2 min | Time with no live session before the watcher exits and stops the servers it manages. `0` disables idle shutdown. |
 | `AGENT_ACTIVE_WINDOW_MS` | 90 s | How long a subagent transcript may go unwritten before that agent counts as finished. |
 | `SEMANTIC_CLASSIFICATION_ENABLED` | `true` | `false` makes no LLM calls, reads/writes no cache, and omits the `semantic` key from `status.json` entirely. |

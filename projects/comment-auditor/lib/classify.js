@@ -95,6 +95,15 @@ async function requestBatch(items) {
 
 // -> Map keyed by comment index. Missing entries mean the model did not answer
 // for that comment; every caller treats that as "leave it alone".
+/**
+ * @param {Array<{index: number, text: string, code: string}>} items
+ * @param {{deadline?: number}} [options] Wall-clock ms; batches stop being sent
+ *   once it passes.
+ * @returns {Promise<Map<number, {label: string, confidence: number, reason: string}>>}
+ *   Keyed by the item's `index`. Sparse by design: a batch the model failed or
+ *   never reached is simply absent, and the caller falls back to rules for
+ *   those rather than treating them as classified.
+ */
 async function classifyComments(items, { deadline = Infinity } = {}) {
   const byIndex = new Map();
   if (items.length === 0) return byIndex;

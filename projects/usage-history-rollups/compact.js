@@ -18,6 +18,15 @@ function parseArgs(argv) {
   return args;
 }
 
+/**
+ * Thins history older than the cutoff down to one entry per session per day.
+ *
+ * @param {Array<object>} entries Time-ordered.
+ * @param {number} cutoffMs Entries at or after this are kept untouched.
+ * @returns {Array<object>} Time-ordered. Because entries are cumulative rather
+ *   than deltas, keeping the *last* of each day preserves that day's totals —
+ *   the same reduction on delta rows would silently discard spend.
+ */
 function compact(entries, cutoffMs) {
   const kept = [];
   // Entries arrive in time order, so a later match overwrites an earlier one.

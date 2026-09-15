@@ -10,7 +10,7 @@ mistake is.
 node run-checks.js
 ```
 
-Green means 6 passed, 2 skipped. Both skips are on purpose:
+Green means 8 passed, 2 skipped. Both skips are on purpose:
 `ask-question-prefilter` drives a blocking desktop popup, and
 `token-monitor-core-lifecycle` takes over the shared port 8090 and loads a
 model onto the GPU, which would disturb any other Claude Code session on the

@@ -28,10 +28,18 @@ const CLAIMS = {
 const RESERVED = {
   8099:
     'Occupied by a process outside this suite. Observed serving nomic-embed-text ' +
-    '(identical model to 8091) -- most likely an orphaned embedding server from ' +
-    'another session. Do not claim; do not kill without finding its owner.',
+    '-- most likely an orphaned embedding server from another session or another ' +
+    'repo. Do not claim; do not kill without finding its owner.',
 };
 
+/**
+ * @param {Record<string, {port: number, host?: string, owner: string, alias?: string}>} [claims]
+ * @param {Record<number, string>} [reserved]
+ * @returns {true}
+ * @throws {Error} On an invalid port, two claims on one port, or a claim on a
+ *   reserved port. Called at require time on purpose: a collision must fail the
+ *   process that loads the registry, not the one that later tries to bind.
+ */
 function validate(claims = CLAIMS, reserved = RESERVED) {
   const seen = new Map();
   for (const [name, c] of Object.entries(claims)) {
@@ -103,8 +111,14 @@ function whoClaims(port) {
   return name ? get(name) : null;
 }
 
-// A raw TCP connect, not /health: something can hold a port without answering
-// HTTP, and that is exactly when an HTTP "is it free?" lies.
+/**
+ * A raw TCP connect, not /health: something can hold a port without answering
+ * HTTP, and that is exactly when an HTTP "is it free?" lies.
+ *
+ * @param {number} port
+ * @param {{host?: string, timeoutMs?: number}} [options]
+ * @returns {Promise<boolean>} Never rejects; a timeout reads as not listening.
+ */
 function isListening(port, { host = HOST, timeoutMs = 400 } = {}) {
   return new Promise((resolve) => {
     const sock = new net.Socket();
@@ -123,6 +137,13 @@ function isListening(port, { host = HOST, timeoutMs = 400 } = {}) {
   });
 }
 
+/**
+ * @param {number} port
+ * @param {{host?: string, timeoutMs?: number}} [options]
+ * @returns {Promise<{modelPath: string|null, props: object}|null>} null when
+ *   whatever holds the port is not a llama-server — "occupied by something
+ *   else", which is never safe to reuse or kill.
+ */
 async function identify(port, { host = HOST, timeoutMs = 1500 } = {}) {
   try {
     const res = await fetch(`http://${host}:${port}/props`, {
@@ -142,8 +163,9 @@ async function identify(port, { host = HOST, timeoutMs = 1500 } = {}) {
   }
 }
 
-// llama-server echoes back whatever path string it was handed. Compare the
-// files, not the spelling.
+// llama-server echoes back whatever path string it was handed, so separators
+// and case may differ from ours for the same file. Two different files that
+// normalize alike would compare equal; realpath is the fix if that ever bites.
 function samePath(a, b) {
   if (!a || !b) return false;
   const norm = (p) => p.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
@@ -152,6 +174,14 @@ function samePath(a, b) {
 
 // status -> 'free' | 'ours' | 'llama' | 'mismatch' | 'foreign'
 // See CLAUDE.md "Ports are hand-claimed" for what each one means for a spawner.
+/**
+ * @param {string|object} name A claim name, or a claim object.
+ * @param {{expectModelPath?: string|null, host?: string}} [options]
+ * @returns {Promise<object>} The claim, plus `status`:
+ *   `free` (nothing listening), `foreign` (something that is not a
+ *   llama-server), `llama` (one, model unchecked), `ours` (same model — safe to
+ *   reuse), `mismatch` (a llama-server running a different model).
+ */
 async function inspect(name, { expectModelPath = null, host = HOST } = {}) {
   const claim = typeof name === 'string' ? get(name) : name;
   const port = claim.port;
@@ -190,8 +220,16 @@ async function scan(opts = {}) {
   return [...claimed, ...reserved];
 }
 
-// -> { port, host, reuse }; reuse true means a healthy instance of the right
-// model is already there and you must not spawn.
+/**
+ * @param {string} name
+ * @param {{expectModelPath?: string|null, host?: string}} [options]
+ * @returns {Promise<{port: number, host: string, reuse: boolean}>} `reuse: true`
+ *   means a healthy instance of the right model is already there and you must
+ *   **not** spawn.
+ * @throws {Error} When the port is held by something foreign or by the wrong
+ *   model — refusing is the point, since binding anyway would take a port whose
+ *   owner is unknown.
+ */
 async function assertAvailable(name, { expectModelPath = null, host = HOST } = {}) {
   const state = await inspect(name, { expectModelPath, host });
   const where = `port ${state.port} (claimed by '${state.name}', ${state.owner})`;

@@ -58,8 +58,21 @@ function newestActivity(status) {
   return newest;
 }
 
-// -> { ok, reason, signal }. Unknown is never ok: the default has to be the
-// one that cannot corrupt a file someone is editing.
+/**
+ * Whether it is safe to rewrite this file — nobody is mid-edit, and a mistake
+ * would be recoverable.
+ *
+ * @param {string} filePath
+ * @param {object} [opts]
+ * @param {number} [opts.now]
+ * @param {number} [opts.quiescentMs]
+ * @param {boolean} [opts.requireGit] Only turn this off if losing the file is
+ *   acceptable.
+ * @returns {{ok: boolean, reason: string, signal: string}} Unknown is never
+ *   `ok`: an unreadable status file, a missing repo and an active writer all
+ *   refuse, because the default has to be the one that cannot corrupt a file
+ *   someone is editing.
+ */
 function isQuiescent(filePath, opts = {}) {
   const now = opts.now ?? Date.now();
   const window = opts.quiescentMs ?? cfg.QUIESCENT_MS;

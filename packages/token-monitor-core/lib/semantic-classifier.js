@@ -44,7 +44,28 @@ function buildUserMessage(blocks) {
   return blocks.map((b) => `[${b.index}:${b.type}] ${truncate(b.text, MAX_BLOCK_CHARS)}`).join('\n\n');
 }
 
-// -> Map keyed by block index, or null on any failure.
+/**
+ * One block's verdict. `verdict` and `productive_fraction` are meaningful only
+ * for thinking blocks, `purpose` only for tool_use ones; the other side is
+ * `'na'`/0 by construction, never a real judgement.
+ *
+ * @typedef {object} BlockVerdict
+ * @property {'productive'|'restating'|'backtracking'|'looping'|'na'} verdict
+ * @property {number} productive_fraction 0..1, clamped on the way in.
+ * @property {'explore'|'mutate'|'verify'|'redundant'|'other'|'na'} purpose
+ * @property {string} reason Truncated to 300 characters.
+ */
+
+/**
+ * @param {{blocks: Array<{index: number, type: string, text: string}>}} turn
+ *   Only the first `MAX_BLOCKS_PER_REQUEST` blocks are sent, so the result may
+ *   cover fewer blocks than were passed.
+ * @returns {Promise<Map<number, BlockVerdict>|null>} Keyed by the block's
+ *   `index`, or null on any failure — an unreachable model, a malformed reply,
+ *   or no usable verdicts. Callers must treat null as "not classified yet"
+ *   rather than "nothing to classify", or an unavailable model silently becomes
+ *   a verdict of zero.
+ */
 async function classifyTurn(turn) {
   const blocks = turn.blocks.slice(0, MAX_BLOCKS_PER_REQUEST);
   if (blocks.length === 0) return null;

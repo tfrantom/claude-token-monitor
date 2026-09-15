@@ -3,6 +3,41 @@
 // $ per 1M tokens, first-party Anthropic API rates. Read CLAUDE.md "Pricing"
 // before changing anything here.
 
+/**
+ * @typedef {object} ModelRate
+ * @property {RegExp} match Tested against the raw model id.
+ * @property {string} name
+ * @property {number} input $ per 1M input tokens.
+ * @property {number} output $ per 1M output tokens.
+ * @property {{input: number, output: number}} [fast] Absent means the model has
+ *   no published fast-mode premium, which `rateFor` reports rather than guesses.
+ * @property {Array<{until: number, input: number, output: number}>} [dated]
+ *   Introductory windows, matched against the turn's own timestamp.
+ */
+
+/**
+ * @typedef {object} Turn
+ * @property {string} [model]
+ * @property {string} [speed] `'fast'` doubles the rate where one is published.
+ * @property {number} [at_ms] The turn's timestamp, never wall clock — a dated
+ *   rate is decided by when the turn happened, not when it is being priced.
+ * @property {number} input_tokens
+ * @property {number} cache_read_input_tokens Billed at 0.1x input.
+ * @property {number} cache_creation_5m Billed at 1.25x input.
+ * @property {number} cache_creation_1h Billed at 2x input.
+ * @property {number} output_tokens
+ */
+
+/**
+ * @typedef {object} PricedTurn
+ * @property {number} cost USD.
+ * @property {boolean} priced False when no rate matched the model id; `cost` is
+ *   then 0, which means unknown rather than free — callers accumulate those
+ *   tokens separately instead of reporting a cheap turn.
+ * @property {boolean} fastUnpriced A fast-mode turn on a model with no fast
+ *   rate: charged at standard and therefore an under-report.
+ */
+
 const SONNET_5_INTRO_UNTIL = Date.parse('2026-09-01T00:00:00Z');
 
 const MODELS = [
@@ -34,13 +69,25 @@ const MODELS = [
   { match: /sonnet-4/, name: 'Claude Sonnet 4.x', input: 3.0, output: 15.0 },
 ];
 
-// First match wins: MODELS must stay ordered most-specific first.
+/**
+ * First match wins: MODELS must stay ordered most-specific first.
+ *
+ * @param {string} [modelId]
+ * @returns {ModelRate|null} null for an unrecognised or missing id.
+ */
 function priceFor(modelId) {
   if (!modelId) return null;
   return MODELS.find((m) => m.match.test(modelId)) || null;
 }
 
-// Keyed on the turn's timestamp, never wall clock.
+/**
+ * Keyed on the turn's timestamp, never wall clock.
+ *
+ * @param {ModelRate} model
+ * @param {{speed?: string, atMs?: number}} [when] Note `atMs`, not `at_ms` —
+ *   `costForTurn` renames it on the way through.
+ * @returns {{input: number, output: number, fastUnpriced: boolean}} $ per 1M.
+ */
 function rateFor(model, { speed, atMs } = {}) {
   if (speed === 'fast' && model.fast) {
     return { input: model.fast.input, output: model.fast.output, fastUnpriced: false };
@@ -57,6 +104,10 @@ function rateFor(model, { speed, atMs } = {}) {
   return { input: model.input, output: model.output, fastUnpriced };
 }
 
+/**
+ * @param {Turn} turn
+ * @returns {PricedTurn}
+ */
 function costForTurn(turn) {
   const model = priceFor(turn.model);
   if (!model) return { cost: 0, priced: false, fastUnpriced: false };

@@ -121,15 +121,19 @@ in every colourscheme. Keep the state vocabulary and glyphs in step with
 `150M` beats `150.0M`, and one decimal only carries information below ~10 of a
 unit.
 
-The semantic layer only ever annotates the thinking bucket's existing total, so
-with no classified turns yet (cold start, or llama-server unreachable)
-`fmt_thinking` falls back to the plain number rather than rendering a
-misleading `0%`.
+**This plugin renders nothing from the `semantic` block.** It once carried a
+`fmt_thinking` producing `thk 12k (72%p)`, which was never called from
+`build_segments` and was deleted as dead code — the same fate as
+`statusline.js`'s `renderThinking()`. Neither bar shows the semantic
+annotation today. Wiring one back in means writing it fresh, and is only worth
+doing if thinking text starts reaching transcripts at all (see
+[`../token-monitor-core/CLAUDE.md`](../token-monitor-core/CLAUDE.md) "Known
+limitations"), since the figure would read 0% classified as things stand.
 
 ## Testing
 
-There is no Lua check in `run-checks.js`; the runner lists this package under
-"no check of their own" on purpose rather than pretending otherwise. Verify by
-hand in a real Neovim with the watcher running. If you add a check, register it
-in the runner's `CHECKS` array — an unregistered check-shaped file is reported
-as a failure by the unregistered-script audit.
+`node test.js` drives the Lua from Neovim in headless mode and is registered in
+`run-checks.js`. `test.lua` is what it runs. Anything not covered there needs a
+real Neovim with the watcher running. If you add a check, register it in the
+runner's `CHECKS` array — an unregistered check-shaped file is reported as a
+failure by the unregistered-script audit.

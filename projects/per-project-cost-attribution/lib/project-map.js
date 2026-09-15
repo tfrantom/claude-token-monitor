@@ -64,6 +64,16 @@ function overrideRoot(dir) {
   return best;
 }
 
+/**
+ * Which repo a working directory belongs to.
+ *
+ * @param {string} cwd
+ * @returns {{project: string, project_root: string|null, resolver: string, subpath: string|null}}
+ *   `resolver` names which rule decided — an explicit override, a workspace
+ *   child, a git root, or none. **Deepest root wins**, so a package inside a
+ *   monorepo is attributed to the package, not the outer repo.
+ *   `'(unknown)'` for an unresolvable cwd; results are memoised per directory.
+ */
 function resolveProject(cwd) {
   const dir = norm(cwd);
   if (!dir) {

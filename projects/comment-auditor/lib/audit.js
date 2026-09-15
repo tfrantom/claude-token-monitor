@@ -45,8 +45,22 @@ function windowAround(source, comment, lines) {
   return all.slice(from, to).join('\n');
 }
 
-// -> { findings, scanned, asked, degraded }  — never throws; a dead model
-// yields rule-only findings rather than nothing.
+/**
+ * @param {string} source
+ * @param {string} filePath Used for the dialect only; nothing is read from disk.
+ * @param {object} [opts]
+ * @param {number} [opts.minConfidence]
+ * @param {Array<[number, number]>} [opts.lines] Restrict to these line ranges.
+ *   Scoping to just-written lines is what makes the model worth asking -- see
+ *   CLAUDE.md "Precision is a base-rate problem".
+ * @param {Function} [opts.classify] Injectable for tests.
+ * @param {boolean} [opts.cache]
+ * @param {number} [opts.deadline]
+ * @returns {Promise<{findings: Array<object>, scanned: number, asked: number, degraded: boolean, unsupported?: boolean}>}
+ *   Never throws. `degraded` means the model was unreachable and the findings
+ *   are rule-only — fewer findings, never wrong ones. `unsupported` means the
+ *   file's language has no scanner, which is distinct from finding nothing.
+ */
 async function auditSource(source, filePath, opts = {}) {
   const minConfidence = opts.minConfidence ?? cfg.MIN_CONFIDENCE;
   const classify = opts.classify || cached(classifyComments, { enabled: opts.cache !== false });
@@ -118,6 +132,14 @@ async function auditSource(source, filePath, opts = {}) {
 }
 
 // Applied back-to-front so earlier offsets stay valid.
+/**
+ * @param {string} source
+ * @param {Array<object>} findings
+ * @param {{verdicts?: string[]}} [options] Which verdicts to act on. The
+ *   default is `remove` alone — never widen it to include `review`.
+ * @returns {string} The rewritten source. Cuts are applied back-to-front so
+ *   earlier offsets stay valid.
+ */
 function applyFindings(source, findings, { verdicts = ['remove'] } = {}) {
   const cuts = findings
     .filter((f) => verdicts.includes(f.verdict))

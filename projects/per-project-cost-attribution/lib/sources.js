@@ -4,6 +4,14 @@ const fs = require('fs');
 const path = require('path');
 const cfg = require('../config');
 
+/**
+ * @param {{since?: number|null, project?: string|null}} [filter] `since` is
+ *   compared against file mtime, so it bounds which files are opened rather
+ *   than which turns are counted.
+ * @returns {Array<{sessionId: string, project: string, path: string, mtimeMs: number}>}
+ *   Empty when the transcripts directory is unreadable — indistinguishable
+ *   from "none yet", which is acceptable here because the caller only reports.
+ */
 function findTranscripts({ since = null, project = null } = {}) {
   const out = [];
   let dirs;
@@ -80,6 +88,14 @@ function loadStatus() {
   }
 }
 
+/**
+ * @param {Record<string, object>} statusSessions
+ * @param {string} sessionId
+ * @returns {{name: string|null, ended: boolean|null, ended_source: string}}
+ *   `ended: null` means unknown, which is not `false`. A session absent from
+ *   `status.json` is only assumed ended when `ASSUME_ENDED_WHEN_ABSENT` says
+ *   so, because absence also means "older than the watcher's window".
+ */
 function sessionMeta(statusSessions, sessionId) {
   const s = statusSessions[sessionId];
   if (!s) {

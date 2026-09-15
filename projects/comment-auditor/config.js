@@ -9,9 +9,15 @@ module.exports = {
   STATE_DIR,
   CACHE_FILE: path.join(STATE_DIR, 'verdict-cache.json'),
 
+  // TOKEN_MONITOR_STATE_DIR is mirrored, not require()d: reconstructing the
+  // default while ignoring the override reads a stale file at the old path.
   STATUS_FILE:
     process.env.COMMENT_AUDITOR_STATUS_FILE ||
-    path.join(__dirname, '..', '..', 'packages', 'token-monitor-core', 'state', 'status.json'),
+    path.join(
+      process.env.TOKEN_MONITOR_STATE_DIR ||
+        path.join(__dirname, '..', '..', 'packages', 'token-monitor-core', 'state'),
+      'status.json'
+    ),
 
   // Whole files by default; past this the model is shown a window around each
   // comment instead. Sized for llama3.2's 4096-token window.

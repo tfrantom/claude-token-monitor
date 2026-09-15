@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const cfg = require('./config');
 const { classifySession } = require('./lib/transcript');
@@ -8,6 +9,9 @@ const managed = require('../llama-local-server/managed');
 const { nameSession, cleanName } = require('./lib/llm-client');
 const { classifyTurn } = require('./lib/semantic-classifier');
 const signals = require('./lib/signals');
+// The lock path is defined once, in the supervisor: the status line's
+// "is a watcher running?" check and this refusal to start must agree.
+const supervisor = require('./lib/supervisor');
 
 fs.mkdirSync(cfg.STATE_DIR, { recursive: true });
 
@@ -19,12 +23,34 @@ function loadJson(file, fallback) {
   }
 }
 
+/**
+ * Writes to a temp file and renames, so a reader never sees a partial file.
+ * Every consumer of `status.json` depends on this.
+ *
+ * @param {string} file
+ * @param {unknown} data
+ */
 function writeJsonAtomic(file, data) {
   const tmp = `${file}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
   fs.renameSync(tmp, file);
 }
 
+/**
+ * @typedef {object} SessionFile
+ * @property {string} sessionId Transcript filename, which is also the
+ *   `status.json` key and `CLAUDE_CODE_SESSION_ID`.
+ * @property {string} project Sanitised cwd, e.g. `C--projects`.
+ * @property {string} path
+ * @property {number} mtimeMs
+ * @property {Array<{path: string, mtimeMs: number, toolUseId: string|null, description: string|null, agentType: string|null}>} subagentPaths
+ */
+
+/**
+ * @returns {SessionFile[]} Transcripts written inside
+ *   `ACTIVE_SESSION_WINDOW_MS`. Anything older is invisible to the watcher
+ *   entirely — this window, not `ended`, is what bounds the work per tick.
+ */
 function findActiveSessionFiles() {
   const cutoff = Date.now() - cfg.ACTIVE_SESSION_WINDOW_MS;
   const results = [];
@@ -108,10 +134,36 @@ function isPidAlive(pid) {
   }
 }
 
-// `known` is not optional -- see CLAUDE.md "Idle shutdown, and the reading
-// that must not be guessed".
+const BOOT_CLOCK_SLACK_MS = 60 * 1000;
+
+/**
+ * @param {{sessionId?: string, pid?: number, startedAt?: number}} entry One
+ *   `~/.claude/sessions/<pid>.json`.
+ * @param {number} [bootMs] The machine's boot instant.
+ * @returns {boolean} Whether the session that wrote this entry is still the
+ *   process holding its pid -- see CLAUDE.md "A registry entry outlives the
+ *   session that wrote it".
+ */
+function isRegistryEntryLive(entry, bootMs = Date.now() - os.uptime() * 1000) {
+  if (!entry || !entry.sessionId || !entry.pid) return false;
+  if (Number.isFinite(entry.startedAt) && entry.startedAt < bootMs - BOOT_CLOCK_SLACK_MS) return false;
+  return isPidAlive(entry.pid);
+}
+
+/**
+ * Reads Claude Code's own live-session registry.
+ *
+ * `known` is not optional -- see CLAUDE.md "Idle shutdown, and the reading
+ * that must not be guessed".
+ *
+ * @returns {{live: Set<string>, known: boolean}} `known` is false when the
+ *   registry could not be read at all. An empty `live` with `known: false`
+ *   means "cannot tell", not "nothing is running" — treating the two alike
+ *   marks every session ended at once and triggers an idle shutdown.
+ */
 function loadLiveSessions() {
   const live = new Set();
+  const bootMs = Date.now() - os.uptime() * 1000;
   let files;
   try {
     files = fs.readdirSync(cfg.CLAUDE_SESSIONS_DIR);
@@ -126,11 +178,17 @@ function loadLiveSessions() {
     } catch {
       continue;
     }
-    if (entry.sessionId && entry.pid && isPidAlive(entry.pid)) live.add(entry.sessionId);
+    if (isRegistryEntryLive(entry, bootMs)) live.add(entry.sessionId);
   }
   return { live, known: true };
 }
 
+/**
+ * @param {Record<string, string|{name: string}>} namesCache Older entries are a
+ *   bare string, newer ones an object.
+ * @param {string} sessionId
+ * @returns {string|null}
+ */
 function getCachedName(namesCache, sessionId) {
   const entry = namesCache[sessionId];
   if (!entry) return null;
@@ -151,6 +209,16 @@ function emptySemanticTotals() {
   };
 }
 
+/**
+ * Classifies turns not yet in the cache, within a time budget.
+ *
+ * @param {Record<string, object>} semanticCache Mutated and persisted. A failed
+ *   turn is stored as `{failedAt}` so it is retried later rather than
+ *   immediately, and never mistaken for a real verdict.
+ * @param {Array<import('./lib/transcript').ParsedSession>} parsedSessions
+ * @returns {Promise<void>} Returns early when the budget runs out; whatever was
+ *   not reached this tick is picked up on a later one.
+ */
 async function backfillSemantic(semanticCache, parsedSessions) {
   const deadline = Date.now() + cfg.SEMANTIC_TIME_BUDGET_MS;
   let dirty = false;
@@ -172,6 +240,13 @@ async function backfillSemantic(semanticCache, parsedSessions) {
   if (dirty) writeJsonAtomic(cfg.SEMANTIC_CACHE_FILE, semanticCache);
 }
 
+/**
+ * @param {Array<object>} turns
+ * @param {Record<string, object>} semanticCache
+ * @returns {object} Token counts per verdict. Unclassified tokens land in the
+ *   `*_unclassified` buckets rather than being dropped, so the totals still add
+ *   up while the model is unreachable or behind.
+ */
 function aggregateSemantic(turns, semanticCache) {
   const sem = emptySemanticTotals();
   for (const turn of turns) {
@@ -207,15 +282,16 @@ function shouldCheckForRename(entry, newTurnCount) {
 
 const MIN_CONTEXT_CHARS = 600;
 
-// Newest first, and labelled. A small model anchors on what it reads first, so
-// with the window in chronological order a topic change gets named after the
-// message the user has already moved on from -- measured twice now, most
-// recently a session stuck on "Token Monitor Repository Updates" through two
-// later prompts about something else. Ordering is the fix; the label is what
-// lets the prompt say which one to name.
-//
-// The per-message front truncation is load-bearing too -- see CLAUDE.md
-// "Three traps that had to be fixed together".
+/**
+ * Builds the naming prompt's context window.
+ *
+ * Newest message first and labelled, and truncation is per-message from the
+ * front. Do not reorder or tail-slice -- see CLAUDE.md "Three traps that had to
+ * be fixed together".
+ *
+ * @param {string[]} texts Oldest first, as the transcript yields them.
+ * @returns {string} '' for no input.
+ */
 function joinRecent(texts) {
   if (texts.length === 0) return '';
   const picked = [texts[texts.length - 1]];
@@ -230,13 +306,8 @@ function joinRecent(texts) {
   return `LATEST MESSAGE:\n${clip(newest)}\n\nEARLIER CONTEXT (background only):\n${earlier.map(clip).join('\n\n')}`;
 }
 
-// Words that describe the shape of an interaction rather than its subject.
-// Two names sharing only these are not about the same thing -- and because one
-// shared word is enough to suppress a rename, a scaffolding word left in here
-// freezes a session's name permanently. That is not hypothetical: a session
-// that had genuinely moved on to another project kept the name
-// "Neovim Token Monitor Error Explanation" because every replacement the model
-// proposed also contained "explanation".
+// One shared word suppresses a rename, so a word left out of here freezes a
+// session's name permanently -- see CLAUDE.md "Naming".
 const TOPIC_STOPWORDS = new Set([
   'session', 'sessions', 'work', 'working', 'task', 'tasks', 'issue', 'issues',
   'and', 'the', 'a', 'an', 'for', 'with', 'to', 'of', 'in', 'on', 'is', 'it',
@@ -269,6 +340,14 @@ function topicWords(name, extra) {
   );
 }
 
+/**
+ * @param {string} a
+ * @param {string} b
+ * @param {Set<string>} [extra] Project-derived stopwords, so a name is not held
+ *   still merely by naming the repo it is in.
+ * @returns {boolean} True when the two names share any non-stopword — one
+ *   shared word suppresses a rename, which is why the stopword lists matter.
+ */
 function sameTopic(a, b, extra) {
   const wa = topicWords(a, extra);
   if (wa.size === 0) return false;
@@ -276,6 +355,17 @@ function sameTopic(a, b, extra) {
   return false;
 }
 
+/**
+ * The session's display name, renaming it when the topic has moved on.
+ *
+ * @param {Record<string, object>} namesCache Mutated and persisted by the caller.
+ * @param {string} sessionId
+ * @param {string[]} userTexts Human messages only, oldest first.
+ * @param {string} project
+ * @returns {Promise<string|null>} The cached name unchanged when nothing
+ *   warrants a rename, or null if there has never been one. The model is asked
+ *   for a name and never asked *whether* to rename -- see CLAUDE.md "Naming".
+ */
 async function getOrUpdateName(namesCache, sessionId, userTexts, project) {
   if (userTexts.length === 0) return null;
 
@@ -288,11 +378,9 @@ async function getOrUpdateName(namesCache, sessionId, userTexts, project) {
   const seenTurns = Math.min(storedTurns, userTexts.length);
   const newTexts = userTexts.slice(seenTurns);
 
-  // A name accepted by an older, weaker cleanName() stays on the bar forever
-  // otherwise: renames only fire on new user turns, so a session that has
-  // stopped typing keeps whatever it was last given. Re-validating on read is
-  // what makes the cache self-correcting when the guard improves -- it is how
-  // "Labeling Conversational Dialogue Task" would have cleared itself.
+  // Re-validated on read, not just on write: renames only fire on new user
+  // turns, so without this a name accepted by an older cleanName() sticks to a
+  // quiet session forever.
   const cachedIsInvalid = !!(entry && entry.name && !cleanName(entry.name));
 
   if (!staleBasis && !cachedIsInvalid && !shouldCheckForRename(entry, newTexts.length)) {
@@ -325,6 +413,15 @@ async function getOrUpdateName(namesCache, sessionId, userTexts, project) {
 }
 
 // Deliberately does NOT merge `userTexts` -- see CLAUDE.md "Naming".
+/**
+ * Folds a subagent's transcript into its parent session's totals.
+ *
+ * Subagent turns are NOT duplicated in the parent transcript, so this adds
+ * spend rather than double counting it.
+ *
+ * @param {import('./lib/transcript').ParsedSession} parent Mutated in place.
+ * @param {import('./lib/transcript').ParsedSession} sub
+ */
 function mergeSubagent(parent, sub) {
   for (const [key, value] of Object.entries(sub.totals)) {
     if (typeof value === 'number') parent.totals[key] = (parent.totals[key] || 0) + value;
@@ -340,6 +437,13 @@ function mergeSubagent(parent, sub) {
 
 // Liveness is transcript write activity, NOT whether the Agent tool_use has a
 // tool_result -- see CLAUDE.md "Running vs finished subagents".
+/**
+ * @param {import('./lib/transcript').ParsedSession} parsed
+ * @param {Map<string, {meta: object, parsed: object}>} byToolUseId
+ * @returns {Array<{description: string, agent_type: string|null, tokens: number, cost_usd: number}>}
+ *   Only agents whose sidechain was written inside `AGENT_ACTIVE_WINDOW_MS` —
+ *   a finished agent drops off rather than accumulating on the bar forever.
+ */
 function buildAgentList(parsed, byToolUseId) {
   const agents = [];
   const liveCutoff = Date.now() - cfg.AGENT_ACTIVE_WINDOW_MS;
@@ -357,8 +461,14 @@ function buildAgentList(parsed, byToolUseId) {
   return agents;
 }
 
-// Newest write per path, recent ones only: the consumers ask "is this file
-// being edited right now", which an unbounded history answers no better.
+/**
+ * Newest write per path, recent ones only: the consumers ask "is this file
+ * being edited right now", which an unbounded history answers no better.
+ *
+ * @param {Array<{path: string, at: string|null}>} fileWrites
+ * @param {number} now
+ * @returns {Array<{path: string, at: string}>} Newest first, one entry per path.
+ */
 function recentWrites(fileWrites, now) {
   const cutoff = now - cfg.RECENT_WRITES_WINDOW_MS;
   const newest = new Map();
@@ -371,13 +481,22 @@ function recentWrites(fileWrites, now) {
   return [...newest.values()].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
 }
 
-// What a session says it is doing, falling back to what can be inferred.
-//
-// A published signal is treated as superseded once the transcript has kept
-// growing well past it: publishing writes a tool call to the transcript, so
-// "newer than the signal" is always true by a second or two, but a session
-// that genuinely went back to work leaves a much wider gap. Without this a
-// stale "done" would sit on the bar until its TTL expired.
+/**
+ * What a session says it is doing, falling back to what can be inferred.
+ * Supersede needs its wide margin because publishing is itself a tool call --
+ * see CLAUDE.md "Staleness is the hard part".
+ *
+ * @param {import('./lib/signals').SessionSignal|undefined} signal What the
+ *   session published. A `hook`-sourced one is never superseded: it is
+ *   bracketed by the next hook, so there is nothing for a heuristic to resolve.
+ * @param {Array<object>} agents Running subagents; they refine a bare
+ *   `working`, but never override a more specific published state.
+ * @param {boolean} ended
+ * @param {number} lastActivityMs Transcript mtime, the inference's only input.
+ * @param {number} [now]
+ * @returns {{state: string|null, detail: string|null, at: string|null, source: string|null, agents: Array<object>}}
+ *   `state: null` means nothing is known — render nothing rather than idle.
+ */
 function buildActivity(signal, agents, ended, lastActivityMs, now = Date.now()) {
   const running = (agents || []).length;
   const writingNow = Number.isFinite(lastActivityMs) && now - lastActivityMs <= cfg.ACTIVITY_ACTIVE_WINDOW_MS;
@@ -428,6 +547,16 @@ function buildActivity(signal, agents, ended, lastActivityMs, now = Date.now()) 
   return { ...inferred, at: null, agents: (signal && signal.agents) || [] };
 }
 
+/**
+ * One full pass: read every active transcript, price it, name it, classify it,
+ * and publish `status.json`.
+ *
+ * @param {Record<string, object>} namesCache Mutated in place.
+ * @param {Record<string, object>} semanticCache Mutated in place.
+ * @returns {Promise<{liveCount: number, registryKnown: boolean}>} Both feed the
+ *   idle-shutdown decision, which must not act on `liveCount === 0` unless
+ *   `registryKnown` is true.
+ */
 async function tick(namesCache, semanticCache) {
   const { live: liveSessionIds, known: registryKnown } = loadLiveSessions();
   const files = findActiveSessionFiles();
@@ -482,9 +611,14 @@ async function tick(namesCache, semanticCache) {
   return { liveCount: liveSessionIds.size, registryKnown };
 }
 
-// See CLAUDE.md "The singleton rule".
+/**
+ * See CLAUDE.md "The singleton rule".
+ *
+ * @returns {boolean} False when another live watcher holds the lock, and the
+ *   caller must exit. A lock naming a dead pid is taken over, not honoured.
+ */
 function acquireLock() {
-  const lockPath = path.join(cfg.STATE_DIR, 'watcher.lock');
+  const lockPath = supervisor.LOCK_FILE;
   try {
     const prev = Number(fs.readFileSync(lockPath, 'utf8').trim());
     if (prev && prev !== process.pid) {
@@ -608,4 +742,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { sameTopic, topicWords, projectStopwords, joinRecent, buildActivity, recentWrites };
+module.exports = { sameTopic, topicWords, projectStopwords, joinRecent, buildActivity, recentWrites, isRegistryEntryLive };

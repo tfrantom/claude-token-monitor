@@ -27,6 +27,12 @@ const MAX_PROMPT_CHARS = 8000;
 // limitations or apologies.
 const REFUSAL = /^\s*(i\s*(?:'|’)?m\s+sorry|i\s+apolog|sorry\b|unfortunately\b|as\s+an\s+ai\b|i\s*(?:'|’)?d\s+be\s+happy\b|i\s+(?:cannot|can\s*not|can't|am\s+unable|don't|do\s+not)\b|there\s+(?:is|are)\s+no\b|it\s+(?:seems|appears)\b|please\s+(?:provide|supply)\b|no\s+(?:name|text|content|input)\b)/i;
 
+/**
+ * @param {string|null|undefined} raw The model's reply, verbatim.
+ * @returns {string|null} null when the reply was a refusal, was narrating the
+ *   titling job rather than the transcript, or was too long to be a title.
+ *   Rejecting is the safe outcome: the caller keeps the previous name.
+ */
 function cleanName(raw) {
   if (!raw) return null;
   let name = String(raw).trim();
@@ -41,6 +47,13 @@ function cleanName(raw) {
   return name;
 }
 
+/**
+ * @param {string} userText Recent user messages, newest last — only the tail is
+ *   sent, so the newest message is the one that always survives truncation.
+ * @returns {Promise<string|null>} null on an unreachable model, a timeout, or a
+ *   reply `cleanName` rejects. Never throws: a missing name is not an error at
+ *   any call site.
+ */
 async function nameSession(userText) {
   if (!userText) return null;
   const prompt = userText.length > MAX_PROMPT_CHARS ? userText.slice(-MAX_PROMPT_CHARS) : userText;

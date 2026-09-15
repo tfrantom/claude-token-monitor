@@ -2,6 +2,12 @@ local M = {}
 
 -- see CLAUDE.md "It locates itself"
 local function default_status_file()
+  -- Mirrors the watcher's own override, or the two disagree about which file
+  -- is live and this renders a stale one as though it were current.
+  local override = vim.env.TOKEN_MONITOR_STATE_DIR
+  if override and override ~= "" then
+    return override .. "/status.json"
+  end
   local source = debug.getinfo(1, "S").source:sub(2)
   local plugin_dir = source:gsub("[/\\]lua[/\\]claude%-token%-monitor[/\\]config%.lua$", "")
   local packages_dir = plugin_dir:gsub("[/\\][^/\\]+$", "")
